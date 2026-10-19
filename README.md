@@ -1,7 +1,8 @@
 # MuMu Portable Kit
 
-Turns the official MuMu Player 12 Global engine installers into a
-**fully portable, offline installation** in a folder you choose.
+Turns the official MuMu Player engine installers (Android 12 / Android 15,
+overseas builds) into a **fully portable, offline installation** in a folder
+you choose.
 
 This repository contains **scripts only** - no MuMu binaries. You supply the
 official engine installer(s) yourself (see below): Android 15 (`mumu15`)
@@ -17,46 +18,41 @@ nxmain 1.8.5.5748 (overseas/global builds), Windows 10/11 x64.
 
 ## What it does
 
-- One-time install runs the official MuMu engine(s) silently (offline - the
-  engine files are the only required downloads and you get them yourself).
-- Installs whichever engines you supply - Android 15 (`mumu15`), Android 12
-  (`nemux`) or both into the same folder.
-- Optional: drop the official NX launcher package (`MuMu-setup-nxmain-*.exe`)
-  next to the installer and it is installed too - you get the launcher app
-  with the device list; "+ New" offers exactly the Android versions whose
-  engine is installed.
-- Adding components later (another engine, or the launcher): put the extra
-  exe next to the installer and run it again on the same folder - it detects
-  what is already installed and adds only the missing component(s).
-- **First launch creates the first device locally - no download.** Additional
-  devices via the launcher's "+ New" work offline too.
-- All user data (settings, screenshots, shared folder, VM profile) lives in
-  `<target>\Data` instead of `%APPDATA%` / `Documents`. At runtime nothing is
-  written to your real user profile.
-- The target folder can be moved or copied to **any path or drive**: absolute
-  paths are re-derived and self-repaired on every launch.
-- Generates one direct-boot script per installed engine (`Launch Android
-  15.cmd` / `Launch Android 12.cmd`) and, when the launcher component is
-  included, `Launch Launcher.cmd` (device list UI), plus `Enable-Driver.cmd` /
+- **Install:** one-time run of the official engine installer(s), silently; the
+  only downloads are the engine installers you supply yourself.
+- **Engines:** installs whichever you supply - Android 15 (`mumu15`), Android 12
+  (`nemux`) or both into the same folder. Drop the optional NX launcher package
+  (`MuMu-setup-nxmain-*.exe`) next to the installer and it is installed too:
+  you get the launcher app with the device list, and "+ New" offers exactly the
+  Android versions whose engine is installed.
+- **Add components later:** put the extra exe next to the installer and run it
+  again on the same folder - it detects what is already installed and adds only
+  the missing component(s) (another engine, or the launcher).
+- **First run needs no download:** the first device is created locally and
+  boots straight away; additional devices via the launcher's "+ New" work
+  offline too.
+- **Portability:** all user data (settings, screenshots, shared folder, VM
+  profile) lives in `<target>\Data` - at runtime nothing is written to your
+  real user profile - and the folder can be moved or copied to any path or
+  drive: absolute paths are re-derived and self-repaired on every launch.
+- **Generated scripts:** one direct-boot script per installed engine (`Launch
+  Android 15.cmd` / `Launch Android 12.cmd`), `Launch Launcher.cmd` (device
+  list UI, when the launcher component is included), plus `Enable-Driver.cmd` /
   `Disable-Driver.cmd` for the per-PC kernel driver.
-- `Disable-Driver.cmd` cleanly removes the driver, the hypervisor runtime(s)
-  in `C:\Program Files\MuMuNxVbox` and `C:\Program Files\MuMuVMMVbox`, the MuMu
-  firewall rules, the NX remote service, the launcher shortcuts / uninstall
-  entry and `C:\ProgramData\Netease` runtime traces from a PC; the launch
-  scripts then stop with a "run Enable-Driver.cmd" message instead of booting
-  a doomed device.
-- The runtimes under `C:\Program Files` are **not optional**: each engine's
-  device shell resolves its hypervisor through
+- **Per-PC cleanup:** `Disable-Driver.cmd` removes the driver, the `C:\Program
+  Files` runtimes, the firewall rules, the NX remote service, the launcher
+  shortcuts / uninstall entry and runtime traces from a PC; the launch scripts
+  then stop with a "run Enable-Driver.cmd" message instead of booting a doomed
+  device.
+- **Runtimes are required:** each engine resolves its hypervisor through
   `Netease\MuMuPlayer15\nx_device\<ver>\configs\device\hypervisor_config.json`
-  (Android 15 -> `MuMuNxVbox`, Android 12 -> `MuMuVMMVbox`) and refuses to
-  boot a VM when the directory is gone (`VERR_RPC_SERVER_UNAVAILABLE`). The
-  installer re-creates them automatically on every run (see Removal).
-- Optional **full offline mode** (no simplewall needed): `Block-Internet.cmd`
-  adds Windows Firewall BLOCK rules (Inbound + Outbound) for every MuMu
-  executable, on this PC; `Allow-Internet.cmd` reverts. Block rules override
-  the allow rules the MuMu installers add themselves. Local device use, adb
-  and the shared folder keep working (Windows Firewall does not filter
-  loopback); the guest Android loses internet too, by design.
+  (Android 15 -> `MuMuNxVbox`, Android 12 -> `MuMuVMMVbox`) and refuses to boot
+  a VM when the `C:\Program Files` directory is gone
+  (`VERR_RPC_SERVER_UNAVAILABLE`). The installer re-creates them automatically
+  on every run (see Removal).
+- **Offline mode:** `Block-Internet.cmd` (no simplewall needed) blocks all MuMu
+  network access on this PC via Windows Firewall; `Allow-Internet.cmd` reverts
+  it - see Going fully offline.
 
 ## Requirements
 
@@ -79,9 +75,10 @@ nxmain 1.8.5.5748 (overseas/global builds), Windows 10/11 x64.
 4. Double-click `InstallMuMuPortable.cmd`.
 5. Accept the UAC prompt, then enter the target folder when asked
    (default `C:\MuMuPortable`).
-6. Wait a few minutes. When it says done, start the emulator with
-   **`Launch Android 15.cmd`** / **`Launch Android 12.cmd`** (or
-   **`Launch Launcher.cmd`** for the device list) inside the target folder.
+6. Wait a few minutes; near the end it asks whether to enable the emulator
+   driver on this PC (one-time, default yes). When it says done, start the
+   emulator with **`Launch Android 15.cmd`** / **`Launch Android 12.cmd`**
+   (or **`Launch Launcher.cmd`** for the device list) inside the target folder.
 
 The kit auto-detects the exe(s) by filename and warns if they do not look like
 the overseas/global builds.
@@ -94,6 +91,7 @@ the overseas/global builds.
 | `InstallMuMuPortable.ps1` | The installer logic |
 | `Cleanup-Residue.cmd` | Rescue cleanup: removes driver/runtime/COM/traces left on a PC when the portable folder was deleted without uninstalling (Administrator) |
 | `README.md` | This file |
+| `LICENSE` | MIT license |
 
 Everything else is generated into the target folder by the installer:
 `Launch Android 15.cmd` / `Launch Android 12.cmd` (one per installed engine),
@@ -164,7 +162,8 @@ PC where MuMu should never touch the network:
 ## How it works
 
 The kit runs the official engine installers exactly as MuMu's own downloader
-would, once per engine, each with its own transaction:
+would - once per engine, each with its own transaction - while redirecting
+`APPDATA`, `LOCALAPPDATA`, `TEMP` and `VBOX_USER_HOME` into `<target>\Data`:
 
 ```
 MuMu-setup-<engine>-V<version>-<channel>-<build>.exe
@@ -181,17 +180,16 @@ to offer in "+ New". If a component is rejected with a version downgrade
 error (rc 80002), the kit automatically retries with the already-installed
 product version.
 
-while redirecting `APPDATA`, `LOCALAPPDATA`, `TEMP` and `VBOX_USER_HOME` into
-`<target>\Data`. If the nxmain package is present it runs afterwards with the
-same protocol against the same product folder, using the **engine's** product
-version (nxmain's own version is lower and would otherwise be rejected as a
+If the nxmain package is present it runs afterwards with the same protocol
+against the same product folder, using the **engine's** product version
+(nxmain's own version is lower and would otherwise be rejected as a
 downgrade). The engine also installs the hypervisor driver and creates its
 firewall rules automatically; leftover bookkeeping files in the real user
 profile (engine install record, nxmain shortcuts, autostart entry, uninstall
 entry, remote service, `C:\ProgramData\Netease`) are cleaned up at the end of
 the install.
 
-Two offline-specific details the kit handles:
+Implementation notes:
 
 - The NX launcher validates a `vms` directory at the product root on every
   start. Without it the launcher runs in a degraded mode where device
