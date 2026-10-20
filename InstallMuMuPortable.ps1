@@ -147,7 +147,7 @@ $needGB = 4 + 3 * ($toInstallEngines.Count - 1)
 if ($free -lt ($needGB * 1GB)) { Die ("Not enough free space on ${driveName}: (need about $needGB GB, found {0:N1} GB)." -f ($free / 1GB)) }
 if (Get-Process -Name MuMuNxDevice, MuMuNxSVC, MuMuNxHeadless -ErrorAction SilentlyContinue) { Die 'MuMu is currently running - close it first.' }
 if ($toInstallEngines.Count -gt 0) {
-    $rtDirs = @('C:\Program Files\MuMuNxVbox\Hypervisor')
+    $rtDirs = @('C:\Program Files\MuMuNxVbox\Hypervisor', 'C:\Program Files\MuMuVMMVbox\Hypervisor')
     foreach ($e in $engines) { $rtDirs += (Join-Path $targetFull ('Netease\MuMuPlayer15\nx_device\' + $engineMap[$e.type].dir + '\hypervisor')) }
     $drvQ = (& sc.exe query MuMuVMMDrv 2>&1 | Out-String) + (& sc.exe query MuMuNxSup 2>&1 | Out-String)
     if ($drvQ -match 'SERVICE_NAME') {
@@ -530,6 +530,29 @@ if (Test-Path -LiteralPath (Join-Path $inst 'nx_main\MuMuNxMain.exe')) {
     Say 'Launch script ready: Launch Launcher.cmd'
 }
 
+$enableEngineBlocks = foreach ($t in $engineMap.Keys) {
+    $m = $engineMap[$t]
+    $pf = 'C:\Program Files\' + $m.installName + '\Hypervisor'
+    @"
+if exist "%INST%\nx_device\$($m.dir)\hypervisor\load.cmd" (
+  echo --- $($m.label) ---
+  if not exist "$pf" md "$pf"
+  xcopy "%INST%\nx_device\$($m.dir)\hypervisor" "$pf" /E /I /Y /Q
+  if errorlevel 1 echo [WARN] $($m.label) runtime copy failed.
+  if exist "$pf\comregister.cmd" (
+    pushd "$pf"
+    call comregister.cmd
+    popd
+  )
+  pushd "%INST%\nx_device\$($m.dir)\hypervisor"
+  call load.cmd
+  if exist loadlwf.cmd call loadlwf.cmd
+  popd
+)
+"@
+}
+$enableEngineBlocks = $enableEngineBlocks -join "`r`n"
+
 $enable = @'
 @echo off
 setlocal EnableExtensions
@@ -544,34 +567,11 @@ if errorlevel 1 (
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "INST=%ROOT%\Netease\MuMuPlayer15"
-set "SRC="
-if exist "%INST%\nx_device\15.0\hypervisor\load.cmd" set "SRC=%INST%\nx_device\15.0\hypervisor"
-if not defined SRC if exist "%INST%\nx_device\12.0\hypervisor\load.cmd" set "SRC=%INST%\nx_device\12.0\hypervisor"
-set "DST=C:\Program Files\MuMuNxVbox"
+if not exist "%USERPROFILE%\.MUMUVMM" md "%USERPROFILE%\.MUMUVMM"
 
-if not defined SRC (
-  echo [ERROR] Hypervisor source not found under any engine directory.
-  pause
-  exit /b 1
-)
+echo === Installing MuMu hypervisor runtimes into C:\Program Files ===
 
-echo === Installing MuMu hypervisor runtime to "%DST%" ===
-if not exist "%DST%\Hypervisor" md "%DST%\Hypervisor"
-xcopy "%SRC%" "%DST%\Hypervisor" /E /I /Y /Q
-if errorlevel 1 (
-  echo [ERROR] Copy failed.
-  pause
-  exit /b 1
-)
-
-echo === Loading driver(s) for every installed engine ===
-for %%V in (15.0 12.0) do if exist "%INST%\nx_device\%%V\hypervisor\load.cmd" (
-  echo --- engine %%V ---
-  pushd "%INST%\nx_device\%%V\hypervisor"
-  call load.cmd
-  if exist loadlwf.cmd call loadlwf.cmd
-  popd
-)
+@@ENGINE_BLOCKS@@
 
 echo.
 echo === Driver status ===
@@ -580,6 +580,7 @@ echo.
 echo Done. If the drivers above show RUNNING you can launch MuMu with the Launch *.cmd scripts.
 pause
 '@
+$enable = $enable.Replace('@@ENGINE_BLOCKS@@', $enableEngineBlocks)
 [IO.File]::WriteAllText((Join-Path $targetFull 'Enable-Driver.cmd'), $enable, [Text.Encoding]::ASCII)
 
 $blockInternet = @'
@@ -652,7 +653,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "DST=C:\Program Files\MuMuNxVbox"
 set "INST=%~dp0Netease\MuMuPlayer15"
 
 echo === Unregistering the NX remote service first (marked services are never auto-restarted) ===
@@ -682,9 +682,9 @@ for %%V in (15.0 12.0) do if exist "%INST%\nx_device\%%V\hypervisor\load.cmd" (
   call load.cmd --uninstall
   popd
 )
-if exist "%DST%\Hypervisor\load.cmd" (
-  echo --- shared runtime ---
-  pushd "%DST%\Hypervisor"
+for %%P in (MuMuNxVbox MuMuVMMVbox) do if exist "C:\Program Files\%%P\Hypervisor\load.cmd" (
+  echo --- runtime %%P ---
+  pushd "C:\Program Files\%%P\Hypervisor"
   call load.cmd --uninstall
   popd
 )
@@ -723,14 +723,18 @@ rmdir /s /q "%ProgramData%\Netease\MumuPlayerRemote" >nul 2>&1
 rmdir "%ProgramData%\Netease" >nul 2>&1
 echo Done.
 echo.
-echo === Removing "%DST%" ===
-rmdir /s /q "%DST%"
-if exist "%DST%" (
-  echo [WARN] Could not fully remove "%DST%" ^(driver files possibly still in use^).
-  echo        Reboot and run this script again to finish cleanup.
-) else (
-  echo Removed.
+echo === Removing the Program Files runtime directories ===
+for %%P in (MuMuNxVbox MuMuVMMVbox) do (
+  if exist "C:\Program Files\%%P" (
+    echo Removing "C:\Program Files\%%P" ...
+    rmdir /s /q "C:\Program Files\%%P"
+  )
 )
+for %%P in (MuMuNxVbox MuMuVMMVbox) do if exist "C:\Program Files\%%P" (
+  echo [WARN] Could not fully remove "C:\Program Files\%%P" ^(driver files possibly still in use^).
+  echo        Reboot and run this script again to finish cleanup.
+)
+if not exist "C:\Program Files\MuMuNxVbox" if not exist "C:\Program Files\MuMuVMMVbox" echo Removed.
 echo.
 echo Note: firewall rules (incl. offline block rules), the NX remote service,
 echo launcher shortcuts, the uninstall entry and %%ProgramData%%\Netease
@@ -753,7 +757,8 @@ FIRST RUN ON A NEW PC (once, needs Administrator)
 -------------------------------------------------
   Right-click  Enable-Driver.cmd -> Run as administrator
   Installs the forked-VirtualBox support driver (MuMuVMMDrv/MuMuNxSup) and the
-  hypervisor runtime to C:\Program Files\MuMuNxVbox.
+  per-engine hypervisor runtimes to C:\Program Files (Android 15: MuMuNxVbox,
+  Android 12: MuMuVMMVbox).
 
 START THE EMULATOR
 ------------------
@@ -827,19 +832,34 @@ else {
     $a = Read-Host 'Enable the emulator driver on THIS PC now? (one-time, needed to run the emulator here) [Y/n]'
     if ($a -match '^(n|no)$') { Say 'Skipped. To enable later: run Enable-Driver.cmd (as Administrator) in the target folder.' Yellow }
     else {
-        $dst = 'C:\Program Files\MuMuNxVbox\Hypervisor'
-        $hypSrc = $null
         foreach ($e in $engines) {
-            $c = Join-Path $inst ("nx_device\" + $engineMap[$e.type].dir + "\hypervisor")
-            if ((Test-Path -LiteralPath $c) -and -not $hypSrc) { $hypSrc = $c }
+            $m = $engineMap[$e.type]
+            $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
+            if (-not (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) { continue }
+            $dst = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
+            Say "Restoring $($m.label) hypervisor runtime to C:\Program Files\$($m.installName)..."
+            try {
+                New-Item -ItemType Directory -Path $dst -Force | Out-Null
+                Copy-Item -Path (Join-Path $hv '*') -Destination $dst -Recurse -Force
+            } catch { Say "[WARN] Could not restore the runtime: $($_.Exception.Message)" Yellow }
+            if (Test-Path -LiteralPath (Join-Path $dst 'comregister.cmd')) {
+                $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $dst + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
+                if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
+            }
         }
-        Say "Copying hypervisor runtime to $dst ..."
-        New-Item -ItemType Directory -Path $dst -Force | Out-Null
-        Copy-Item -Path "$hypSrc\*" -Destination $dst -Recurse -Force
         Say 'Loading driver(s)...'
-        Push-Location $dst
-        try { & cmd.exe /c 'load.cmd' } finally { Pop-Location }
-        Say 'Driver status:' 
+        foreach ($e in $engines) {
+            $m = $engineMap[$e.type]
+            $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
+            if (-not (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) { continue }
+            Push-Location -LiteralPath $hv
+            try { & cmd.exe /c 'load.cmd' } finally { Pop-Location }
+            if (Test-Path -LiteralPath (Join-Path $hv 'loadlwf.cmd')) {
+                Push-Location -LiteralPath $hv
+                try { & cmd.exe /c 'loadlwf.cmd' } finally { Pop-Location }
+            }
+        }
+        Say 'Driver status:'
         & sc.exe query MuMuVMMDrv
         if ($LASTEXITCODE -ne 0) { & sc.exe query MuMuNxSup }
     }
