@@ -7,8 +7,34 @@ param([string]$Target)
 $ErrorActionPreference = 'Stop'
 
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
-function Die($m) { Say "`n[ERROR] $m" Red; Read-Host 'Press Enter to exit'; exit 1 }
-trap { Say "`n[ERROR] $_" Red; Read-Host 'Press Enter to exit'; exit 1 }
+$script:stagingRoot = $null
+function Restore-StagedTarget {
+    if (-not $script:stagingRoot) { return }
+    $staged = $script:stagingRoot
+    $final = $targetFull
+    $script:stagingRoot = $null
+    if (-not (Test-Path -LiteralPath $staged)) { return }
+    if (Test-Path -LiteralPath $final) {
+        Say "[WARN] Staged install left at $staged (target already exists)." Yellow
+        return
+    }
+    try {
+        Move-Item -LiteralPath $staged -Destination $final -ErrorAction Stop
+        Say "Moved staged install back to $final." Yellow
+        if (Get-Command Update-StagedPaths -ErrorAction SilentlyContinue) {
+            $instFinal = Join-Path $final 'Netease\MuMuPlayer15'
+            $dataFinal = Join-Path $final 'Data'
+            foreach ($root in @((Join-Path $instFinal 'configs'), (Join-Path $instFinal 'nx_device'), (Join-Path $instFinal 'nx_main'), (Join-Path $dataFinal 'Roaming'), (Join-Path $dataFinal 'Local'))) {
+                Update-StagedPaths -Root $root -Old $staged -New $final
+            }
+        }
+    } catch {
+        Say "[WARN] Could not move staged install back to ${final}: $($_.Exception.Message)" Yellow
+        Say "       The staged tree is at $staged" Yellow
+    }
+}
+function Die($m) { Say "`n[ERROR] $m" Red; Restore-StagedTarget; Read-Host 'Press Enter to exit'; exit 1 }
+trap { Say "`n[ERROR] $_" Red; Restore-StagedTarget; Read-Host 'Press Enter to exit'; exit 1 }
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Die 'Run this via "InstallMuMuPortable.cmd" (double-click) so it can request Administrator rights.'
@@ -71,6 +97,10 @@ try { $targetFull = [IO.Path]::GetFullPath($target) } catch { Die "Invalid path:
 if ($targetFull -match '[&|<>^"]') { Die 'Target path contains unsupported characters (& | < > ^ "). Pick a simpler folder name.' }
 foreach ($bad in @($env:windir, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
     if ($targetFull -like "$bad*") { Die "Refusing to install into $bad - pick your own folder." }
+}
+$kitDirFull = [IO.Path]::GetFullPath($kitDir).TrimEnd('\')
+if ($targetFull -eq $kitDirFull -or $kitDirFull.StartsWith($targetFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    Die "Choose a target folder that does not contain the installer kit ($kitDirFull)."
 }
 
 $toInstallEngines = $engines
@@ -137,8 +167,67 @@ if ($toInstallEngines.Count -gt 0) {
 }
 Say "Target : $targetFull"
 
+function Get-SpaceFreeStagingPath([string]$FinalPath) {
+    $parent = Split-Path -Parent $FinalPath
+    while ($parent -match '\s' -and (Split-Path -Parent $parent)) {
+        $parent = Split-Path -Parent $parent
+    }
+    if (-not $parent -or $parent -match '\s') {
+        Die "Could not find a whitespace-free staging folder for '$FinalPath'."
+    }
+    do {
+        $candidate = Join-Path $parent ('MuMuPortableTmp-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    } while (Test-Path -LiteralPath $candidate)
+    return $candidate
+}
+
+function Update-StagedPaths([string]$Root, [string]$Old, [string]$New) {
+    if (-not $Root -or -not $Old -or -not (Test-Path -LiteralPath $Root)) { return }
+    $oldEsc = $Old.Replace('\', '\\')
+    $newEsc = $New.Replace('\', '\\')
+    $oldFwd = $Old.Replace('\', '/')
+    $newFwd = $New.Replace('\', '/')
+    foreach ($f in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $bytes = [IO.File]::ReadAllBytes($f.FullName)
+            $enc = New-Object Text.UTF8Encoding($false)
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $enc = [Text.Encoding]::Unicode }
+            elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) { $enc = [Text.Encoding]::BigEndianUnicode }
+            elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { $enc = New-Object Text.UTF8Encoding($true) }
+            $raw = [IO.File]::ReadAllText($f.FullName)
+            $upd = [regex]::Replace($raw, [regex]::Escape($Old), { param($m) $New }, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $upd = [regex]::Replace($upd, [regex]::Escape($oldEsc), { param($m) $newEsc }, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $upd = [regex]::Replace($upd, [regex]::Escape($oldFwd), { param($m) $newFwd }, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($upd -ne $raw) {
+                [IO.File]::WriteAllText($f.FullName, $upd, $enc)
+                Say "Updated staged path in $($f.FullName)"
+            }
+        } catch { Say "[WARN] Could not update $($f.FullName): $($_.Exception.Message)" Yellow }
+    }
+}
+
+# The engine consumes /D= unquoted to end-of-line, so a target path with spaces breaks
+# the install. Install into a space-free sibling, then move the tree back.
+$installRoot = $targetFull
+$installStaging = $null
+if (($targetFull -match '\s') -and (($toInstallEngines.Count -gt 0) -or $addNxmain)) {
+    $installStaging = Get-SpaceFreeStagingPath $targetFull
+    $script:stagingRoot = $installStaging
+    try {
+        if (Test-Path -LiteralPath $targetFull) {
+            Move-Item -LiteralPath $targetFull -Destination $installStaging -ErrorAction Stop
+        } else {
+            New-Item -ItemType Directory -Path $installStaging -Force | Out-Null
+        }
+    } catch {
+        Die "Could not move the target into a space-free staging folder. Close MuMu and anything using '$targetFull', then retry. ($($_.Exception.Message))"
+    }
+    $installRoot = $installStaging
+    Say "Whitespace in target path - staging install in $installStaging (moved back after install)." Cyan
+}
+
 # --- portable environment: the engine writes into the tree, not into the user profile ---
-$data = Join-Path $targetFull 'Data'
+$data = Join-Path $installRoot 'Data'
 foreach ($d in @($data, "$data\Roaming", "$data\Local", "$data\Temp", "$data\VBox", "$data\MuMuSharedFolder", "$data\logs")) {
     New-Item -ItemType Directory -Path $d -Force | Out-Null
 }
@@ -149,7 +238,7 @@ $env:TMP = "$data\Temp"
 $env:VBOX_USER_HOME = "$data\VBox"
 
 # --- 3. run the engine(s), two phases each, one transaction per component ---
-$inst = Join-Path $targetFull 'Netease\MuMuPlayer15'
+$inst = Join-Path $installRoot 'Netease\MuMuPlayer15'
 
 function Get-ProductVersion {
     try { return (Get-Content -LiteralPath (Join-Path $inst 'configs\main\install_config.json') -Raw | ConvertFrom-Json).product.version } catch { return $null }
@@ -199,6 +288,45 @@ foreach ($e in $toInstallEngines) {
     Say "$($e.type) engine install complete." Green
 }
 
+# --- 3a. engine vms storage dir (the NX launchers validate this dir at startup;
+#         without it nx_main falls back to degraded mode and refuses device management) ---
+New-Item -ItemType Directory -Path "$inst\vms" -Force | Out-Null
+Say "VM storage dir ready: $targetFull\Netease\MuMuPlayer15\vms"
+
+# --- 3b. optional nxmain component (run while the tree is at the space-free staging path) ---
+if ($addNxmain) {
+    Say ''
+    Say '--- NX main launcher component (nxmain) ---' Cyan
+    $txn = [guid]::NewGuid().ToString()
+    Invoke-Component $nxmain 'install_prepare' 'nxmain' (Get-ProductVersion)
+    Invoke-Component $nxmain 'commit' 'nxmain' (Get-ProductVersion)
+    if (-not (Test-Path -LiteralPath "$inst\nx_main\MuMuNxMain.exe")) {
+        Die "nxmain finished but '$inst\nx_main\MuMuNxMain.exe' is missing. Check the logs above."
+    }
+    Say 'nxmain installed (launcher UI included).' Green
+}
+
+# --- move the staged tree back to the requested path before host repair/scripts ---
+if ($installStaging) {
+    if (Test-Path -LiteralPath $targetFull) {
+        Die "The target folder was recreated during install; staged files are in $installStaging."
+    }
+    Move-Item -LiteralPath $installStaging -Destination $targetFull -ErrorAction Stop
+    $script:stagingRoot = $null
+    $installRoot = $targetFull
+    $inst = Join-Path $targetFull 'Netease\MuMuPlayer15'
+    $data = Join-Path $targetFull 'Data'
+    $env:APPDATA = "$data\Roaming"
+    $env:LOCALAPPDATA = "$data\Local"
+    $env:TEMP = "$data\Temp"
+    $env:TMP = "$data\Temp"
+    $env:VBOX_USER_HOME = "$data\VBox"
+    Say "Staged install moved to $targetFull." Green
+    foreach ($root in @((Join-Path $inst 'configs'), (Join-Path $inst 'nx_device'), (Join-Path $inst 'nx_main'), (Join-Path $data 'Roaming'), (Join-Path $data 'Local'))) {
+        Update-StagedPaths -Root $root -Old $installStaging -New $targetFull
+    }
+}
+
 # --- 3c. per-engine repair/normalize: Program Files runtime, COM registration, driver family ---
 # The engine's upgrade path replaces the shared runtime and unregisters the other engine's
 # COM classes and drivers; re-register and re-install each installed engine's own family
@@ -246,11 +374,6 @@ foreach ($e in $engines) {
     }
 }
 
-# --- 3b. engine vms storage dir (the NX launchers validate this dir at startup;
-#         without it nx_main falls back to degraded mode and refuses device management) ---
-New-Item -ItemType Directory -Path "$inst\vms" -Force | Out-Null
-Say "VM storage dir ready: $inst\vms"
-
 # --- 4. shared folder -> inside the portable tree ---
 $cfgFile = "$inst\configs\main\vm_config.json"
 $data = Join-Path $targetFull 'Data'
@@ -270,19 +393,6 @@ $usr | Add-Member -NotePropertyName 'name' -NotePropertyValue 'MuMuSharedFolder'
 $usr | Add-Member -NotePropertyName 'path' -NotePropertyValue $shared -Force
 [IO.File]::WriteAllText($cfgFile, ($cfg | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
 Say "Shared folder -> $shared"
-
-# --- 4b. optional nxmain component (launcher / Android version manager) ---
-if ($addNxmain) {
-    Say ''
-    Say '--- NX main launcher component (nxmain) ---' Cyan
-    $txn = [guid]::NewGuid().ToString()
-    Invoke-Component $nxmain 'install_prepare' 'nxmain' (Get-ProductVersion)
-    Invoke-Component $nxmain 'commit' 'nxmain' (Get-ProductVersion)
-    if (-not (Test-Path -LiteralPath "$inst\nx_main\MuMuNxMain.exe")) {
-        Die "nxmain finished but '$inst\nx_main\MuMuNxMain.exe' is missing. Check the logs above."
-    }
-    Say 'nxmain installed (launcher UI included).' Green
-}
 
 # --- 5. portable launch scripts + driver scripts + readme into the target ---
 $launchEngineTpl = @'
