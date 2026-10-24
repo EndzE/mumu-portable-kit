@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 $script:stagingRoot = $null
 $script:activeRoot = $null
+$script:targetPreExisted = $false
 $script:origEnv = @{
     APPDATA        = $env:APPDATA
     LOCALAPPDATA   = $env:LOCALAPPDATA
@@ -35,6 +36,16 @@ function Restore-StagedTarget {
     $final = $targetFull
     $script:stagingRoot = $null
     if (-not (Test-Path -LiteralPath $staged)) { return }
+    if (-not $script:targetPreExisted) {
+        $stagedItems = @(Get-ChildItem -LiteralPath $staged -Force -ErrorAction SilentlyContinue)
+        if ($stagedItems.Count -eq 0) {
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+        } else {
+            Say "[WARN] Incomplete staged install left at $staged (target did not exist prior to install)." Yellow
+            $script:activeRoot = $staged
+        }
+        return
+    }
     if (Test-Path -LiteralPath $final) {
         Say "[WARN] Staged install left at $staged (target already exists)." Yellow
         $script:activeRoot = $staged
@@ -177,7 +188,8 @@ function Get-InstalledEngineVer($cfg, $instPath, [string]$type) {
 
 $toInstallEngines = @()
 $addNxmain = $false
-if (Test-Path -LiteralPath $targetFull) {
+$script:targetPreExisted = Test-Path -LiteralPath $targetFull
+if ($script:targetPreExisted) {
     $items = @(Get-ChildItem -LiteralPath $targetFull -Force -ErrorAction SilentlyContinue)
     if ($items.Count -gt 0) {
         $instTree = Join-Path $targetFull 'Netease\MuMuPlayer15'
@@ -273,7 +285,6 @@ Put the mumu15 (Android 15) and/or nemux (Android 12) engine exe next to this sc
   $kitDir
 Put the mumu15 (Android 15) and/or nemux (Android 12) engine exe next to this script and retry (at least one engine is required)."
     }
-    New-Item -ItemType Directory -Path $targetFull -Force | Out-Null
     $toInstallEngines = $engines
     $addNxmain = [bool]$nxmain
 }
@@ -354,14 +365,14 @@ $installRoot = $targetFull
 $installStaging = $null
 if (($targetFull -match '\s') -and (($toInstallEngines.Count -gt 0) -or $addNxmain)) {
     $installStaging = Get-SpaceFreeStagingPath $targetFull
-    $script:stagingRoot = $installStaging
-    $script:activeRoot = $installStaging
     try {
-        if (Test-Path -LiteralPath $targetFull) {
+        if ($script:targetPreExisted -and (Test-Path -LiteralPath $targetFull)) {
             Move-Item -LiteralPath $targetFull -Destination $installStaging -ErrorAction Stop
         } else {
             New-Item -ItemType Directory -Path $installStaging -Force | Out-Null
         }
+        $script:stagingRoot = $installStaging
+        $script:activeRoot = $installStaging
     } catch {
         Die "Could not move the target into a space-free staging folder. Close MuMu and anything using '$targetFull', then retry. ($($_.Exception.Message))"
     }
