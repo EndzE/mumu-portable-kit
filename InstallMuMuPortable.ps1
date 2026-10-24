@@ -950,7 +950,7 @@ echo ============================================================
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "MUMU_ROOT=%ROOT%"
-powershell -NoProfile -Command "$g='MuMu Portable Offline ('+$env:MUMU_ROOT+')';$gShared='MuMu Portable Offline (Shared Runtime)';$r=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group $gShared -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group 'MuMu Portable Offline' -ErrorAction SilentlyContinue);if($r.Count){$r|Remove-NetFirewallRule;'Removed offline block rules: '+$r.Count}else{'No offline block rules present.'}"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$g='MuMu Portable Offline ('+$env:MUMU_ROOT+')';$gShared='MuMu Portable Offline (Shared Runtime)';$r=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue);$rem=0;if($r.Count){$r|Remove-NetFirewallRule;$rem+=$r.Count};$rOld=@(Get-NetFirewallRule -Group 'MuMu Portable Offline' -ErrorAction SilentlyContinue);if($rOld.Count){$rOld|Remove-NetFirewallRule;$rem+=$rOld.Count};$other=@(Get-NetFirewallRule -ErrorAction SilentlyContinue|Where-Object{$_.Group -like 'MuMu Portable Offline (*' -and $_.Group -ne $gShared});if($other.Count -eq 0){$rSh=@(Get-NetFirewallRule -Group $gShared -ErrorAction SilentlyContinue);if($rSh.Count){$rSh|Remove-NetFirewallRule;$rem+=$rSh.Count;'Removed offline block rules: '+$rem+' (including shared hypervisor rules).'}elseif($rem){'Removed offline block rules: '+$rem}else{'No offline block rules present.'}}else{if($rem){'Removed offline block rules: '+$rem+' for this folder.'}else{'No offline block rules present for this folder.'};'Note: Shared hypervisor rules (C:\Program Files) kept active because another portable instance is still in offline mode.'} "
 set "MUMU_ROOT="
 echo.
 pause
@@ -1105,8 +1105,10 @@ GO FULLY OFFLINE ON THIS PC (Administrator, optional)
   the Android guest loses internet too (by design).
   Re-run after moving this folder or updating a component.
   Rules are tagged per folder, so several portable setups on one PC
-  keep separate offline switches.
-  Revert with  Allow-Internet.cmd  (same right-click; this folder only).
+  keep separate offline switches. Shared C:\Program Files hypervisor
+  rules are kept active until all portable setups leave offline mode.
+  Revert with  Allow-Internet.cmd  (same right-click; this folder only;
+  shared hypervisor rules are unblocked once no other offline setups remain).
   Both are also undone by Disable-Driver.cmd.
 
 REMOVE THE DRIVER FROM A PC (Administrator)

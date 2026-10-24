@@ -96,9 +96,9 @@ To run MuMu in a completely local sandbox without network access or telemetry, u
 - **`Block-Internet.cmd`** *(Administrator)*:
   Adds Windows Firewall **BLOCK** rules (Inbound & Outbound) for every MuMu executable, engine, and hypervisor runtime.
   - Device boot, local loopback, ADB (`adb devices`), and shared folder access remain fully functional.
-  - Rules are isolated per folder (`MuMu Portable Offline (<folder>)`), preventing conflicts across multiple setups.
+  - Rules are isolated per folder (`MuMu Portable Offline (<folder>)`), preventing conflicts across multiple setups. Shared hypervisor rules (`C:\Program Files`) protect all instances.
 - **`Allow-Internet.cmd`** *(Administrator)*:
-  Removes the firewall block rules and restores normal network connectivity.
+  Removes the firewall block rules for this folder and restores normal network connectivity. Shared hypervisor rules are unblocked once no other offline instances remain.
 
 ---
 
