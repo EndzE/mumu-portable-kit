@@ -693,7 +693,7 @@ set "MUMU_CFG="
 
 sc query @@SVC@@ 2>nul | findstr "RUNNING" >nul 2>&1
 if errorlevel 1 (
-  echo [WARN] MuMu driver (@@SVC@@) is not installed or not running on this PC.
+  echo [WARN] MuMu driver [@@SVC@@] is not installed or not running on this PC.
   echo        Run "Enable-Driver.cmd" as Administrator once, then relaunch.
   echo        MuMu cannot boot a device without its driver - aborting.
   echo.
@@ -757,7 +757,7 @@ set "DRV_OK="
 sc query MuMuVMMDrv 2>nul | findstr "RUNNING" >nul 2>&1 && set "DRV_OK=1"
 sc query MuMuNxSup 2>nul | findstr "RUNNING" >nul 2>&1 && set "DRV_OK=1"
 if not defined DRV_OK (
-  echo [WARN] MuMu driver (MuMuVMMDrv/MuMuNxSup) is not installed or not running on this PC.
+  echo [WARN] MuMu driver [MuMuVMMDrv / MuMuNxSup] is not installed or not running on this PC.
   echo        Run "Enable-Driver.cmd" as Administrator once, then relaunch.
   echo        MuMu cannot boot a device without its driver - aborting.
   echo.
