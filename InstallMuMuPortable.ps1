@@ -348,7 +348,7 @@ function Get-ProductVersion {
 }
 function Invoke-ComponentOnce([string]$exePath, [string]$action, [string]$tag, [string]$ver) {
     $argList = @(
-        "/txn_id=$txn",
+        "/txn_id=$script:txn",
         "/action=$action",
         "/from_orchestrator=1",
         "/silent=1",
@@ -362,32 +362,63 @@ function Invoke-ComponentOnce([string]$exePath, [string]$action, [string]$tag, [
     $p = Start-Process -FilePath $exePath -ArgumentList ($argList -join ' ') -Wait -PassThru -WindowStyle Hidden
     return $p.ExitCode
 }
+
+function Handle-ComponentFailure([string]$tag, [string]$action, [int]$rc) {
+    Say "[FAIL] $tag /action=$action exited with code $rc" Red
+    if ($tag -eq 'nxmain') { Say "nxmain logs: $env:TEMP\MuMuPlayerGlobal\main\" Yellow }
+    else { Say "Engine logs: $env:TEMP\MuMuPlayerGlobal\$tag\" Yellow }
+    if ($rc -eq 30012) {
+        Say 'The hypervisor driver was locked by the kernel (it was loaded before this run).' Yellow
+        Say 'REBOOT Windows, then run this installer again - the upgrade will complete then.' Yellow
+    }
+    Die "Installation failed during $tag '$action'."
+}
+
+function Install-Component([string]$exePath, [string]$tag, [string]$ver) {
+    $script:txn = [guid]::NewGuid().ToString()
+    $rc = Invoke-ComponentOnce $exePath 'install_prepare' $tag $ver
+    $pv = Get-ProductVersion
+    if ($rc -eq 80002 -and $pv -and $pv -ne $ver) {
+        Say "[retry] $tag was rejected (downgrade check, rc=80002) - retrying with product version $pv" Yellow
+        $staleTxn = Join-Path $inst (".txn\" + $script:txn)
+        if (Test-Path -LiteralPath $staleTxn) { Remove-Item -LiteralPath $staleTxn -Recurse -Force -ErrorAction SilentlyContinue }
+        $script:txn = [guid]::NewGuid().ToString()
+        $ver = $pv
+        $rc = Invoke-ComponentOnce $exePath 'install_prepare' $tag $ver
+    }
+    if ($rc -ne 0) { Handle-ComponentFailure $tag 'install_prepare' $rc }
+    Say "    [$tag install_prepare] OK" Green
+
+    $rc = Invoke-ComponentOnce $exePath 'commit' $tag $ver
+    if ($rc -eq 80002) {
+        $pv = Get-ProductVersion
+        if ($pv -and $pv -ne $ver) {
+            Say "[retry] $tag commit was rejected (downgrade check, rc=80002) - retrying with product version $pv" Yellow
+            $rc = Invoke-ComponentOnce $exePath 'commit' $tag $pv
+        }
+    }
+    if ($rc -ne 0) { Handle-ComponentFailure $tag 'commit' $rc }
+    Say "    [$tag commit] OK" Green
+}
+
 function Invoke-Component([string]$exePath, [string]$action, [string]$tag, [string]$ver) {
     $rc = Invoke-ComponentOnce $exePath $action $tag $ver
     $pv = Get-ProductVersion
     if ($rc -eq 80002 -and $pv -and $pv -ne $ver) {
         Say "[retry] $tag was rejected (downgrade check, rc=80002) - retrying with product version $pv" Yellow
+        $staleTxn = Join-Path $inst (".txn\" + $script:txn)
+        if (Test-Path -LiteralPath $staleTxn) { Remove-Item -LiteralPath $staleTxn -Recurse -Force -ErrorAction SilentlyContinue }
+        $script:txn = [guid]::NewGuid().ToString()
         $rc = Invoke-ComponentOnce $exePath $action $tag $pv
     }
-    if ($rc -ne 0) {
-        Say "[FAIL] $tag /action=$action exited with code $rc" Red
-        if ($tag -eq 'nxmain') { Say "nxmain logs: $env:TEMP\MuMuPlayerGlobal\main\" Yellow }
-        else { Say "Engine logs: $env:TEMP\MuMuPlayerGlobal\$tag\" Yellow }
-        if ($rc -eq 30012) {
-            Say 'The hypervisor driver was locked by the kernel (it was loaded before this run).' Yellow
-            Say 'REBOOT Windows, then run this installer again - the upgrade will complete then.' Yellow
-        }
-        Die "Installation failed during $tag '$action'."
-    }
+    if ($rc -ne 0) { Handle-ComponentFailure $tag $action $rc }
     Say "    [$tag $action] OK" Green
 }
 
 foreach ($e in $toInstallEngines) {
-    $txn = [guid]::NewGuid().ToString()
     Say ''
     Say "--- Engine: $($e.name)  ($($engineMap[$e.type].label)) ---" Cyan
-    Invoke-Component $e.path 'install_prepare' $e.type $e.version
-    Invoke-Component $e.path 'commit' $e.type $e.version
+    Install-Component $e.path $e.type $e.version
     if (-not (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $engineMap[$e.type].dir + "\shell\MuMuNxDevice.exe")))) {
         Die "The $($e.type) engine finished but the install tree looks incomplete ($inst). Check the engine logs."
     }
@@ -403,9 +434,8 @@ Say "VM storage dir ready: $targetFull\Netease\MuMuPlayer15\vms"
 if ($addNxmain) {
     Say ''
     Say '--- NX main launcher component (nxmain) ---' Cyan
-    $txn = [guid]::NewGuid().ToString()
-    Invoke-Component $nxmain 'install_prepare' 'nxmain' (Get-ProductVersion)
-    Invoke-Component $nxmain 'commit' 'nxmain' (Get-ProductVersion)
+    $nxVer = if ($pv = (Get-ProductVersion)) { $pv } elseif ($nxVersion) { $nxVersion } else { '1.0.0.0' }
+    Install-Component $nxmain 'nxmain' $nxVer
     if (-not (Test-Path -LiteralPath "$inst\nx_main\MuMuNxMain.exe")) {
         Die "nxmain finished but '$inst\nx_main\MuMuNxMain.exe' is missing. Check the logs above."
     }
