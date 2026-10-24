@@ -31,14 +31,14 @@ function Restore-Environment {
 }
 
 function Stop-RunningMuMuHostProcesses {
-    & sc.exe stop MuMuPlayerRemoteService 2>&1 | Out-Null
-    & sc.exe delete MuMuPlayerRemoteService 2>&1 | Out-Null
+    cmd.exe /c "sc stop MuMuPlayerRemoteService >nul 2>&1"
+    cmd.exe /c "sc delete MuMuPlayerRemoteService >nul 2>&1"
     Start-Sleep -Milliseconds 200
     foreach ($pn in @('MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd',
                       'MuMuNxMain', 'MuMuNxLauncher', 'MuMuNxService', 'MuMuManager',
                       'MuMuNxDevice', 'MuMuNxSVC', 'MuMuNxHeadless',
                       'MuMuVMMHeadless', 'MuMuVMMSVC', 'MuMuVMMManage')) {
-        & taskkill.exe /F /IM "$pn.exe" 2>&1 | Out-Null
+        cmd.exe /c "taskkill /F /IM $pn.exe >nul 2>&1"
     }
     Start-Sleep -Milliseconds 300
 }
