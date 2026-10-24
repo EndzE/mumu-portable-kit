@@ -86,7 +86,7 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MuMuPlayerGlo
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MuMuPlayerGlobal" /f >nul 2>&1
 reg delete "HKLM\SOFTWARE\Netease\MuMuPlayerRemote" /f >nul 2>&1
 reg delete "HKLM\SOFTWARE\Netease\MuMuPlayerRemoteSetup" /f >nul 2>&1
-powershell -NoProfile -Command "Remove-Item 'HKLM:\SOFTWARE\Netease' -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -Command "if ((Test-Path 'HKLM:\SOFTWARE\Netease') -and -not (Get-ChildItem 'HKLM:\SOFTWARE\Netease' -ErrorAction SilentlyContinue | Select-Object -First 1)) { Remove-Item 'HKLM:\SOFTWARE\Netease' -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 reg delete "HKLM\SOFTWARE\WOW6432Node\NemuServer" /f >nul 2>&1
 rmdir /s /q "%ProgramData%\Netease\MuMuPlayerGlobal" >nul 2>&1
 rmdir /s /q "%ProgramData%\Netease\MumuPlayerRemote" >nul 2>&1
@@ -94,7 +94,7 @@ rmdir "%ProgramData%\Netease" >nul 2>&1
 
 echo.
 echo === Removing user-profile traces ===
-powershell -NoProfile -Command "Get-ChildItem 'HKCU:\Software\Netease' -ErrorAction SilentlyContinue|Where-Object{$_.PSChildName -like 'MuMu*'}|Remove-Item -Recurse -Force;Remove-Item 'HKCU:\Software\Netease' -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -Command "Get-ChildItem 'HKCU:\Software\Netease' -ErrorAction SilentlyContinue|Where-Object{$_.PSChildName -like 'MuMu*'}|Remove-Item -Recurse -Force;if ((Test-Path 'HKCU:\Software\Netease') -and -not (Get-ChildItem 'HKCU:\Software\Netease' -ErrorAction SilentlyContinue | Select-Object -First 1)) { Remove-Item 'HKCU:\Software\Netease' -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 rmdir /s /q "%APPDATA%\Netease\MuMuPlayerGlobal" >nul 2>&1
 rmdir /s /q "%APPDATA%\Netease\MuMuVMM" >nul 2>&1
 rmdir "%APPDATA%\Netease" >nul 2>&1

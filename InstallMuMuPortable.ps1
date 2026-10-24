@@ -715,8 +715,8 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v MuMuPlayerGlo
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MuMuPlayerGlobal" /f >nul 2>&1
 reg delete "HKLM\SOFTWARE\Netease\MuMuPlayerRemote" /f >nul 2>&1
 reg delete "HKLM\SOFTWARE\Netease\MuMuPlayerRemoteSetup" /f >nul 2>&1
-rem --- remove the parent only if it is now empty (PS refuses non-empty keys) ---
-powershell -NoProfile -Command "Remove-Item 'HKLM:\SOFTWARE\Netease' -ErrorAction SilentlyContinue" >nul 2>&1
+rem --- remove the parent only if it is now empty ---
+powershell -NoProfile -Command "if ((Test-Path 'HKLM:\SOFTWARE\Netease') -and -not (Get-ChildItem 'HKLM:\SOFTWARE\Netease' -ErrorAction SilentlyContinue | Select-Object -First 1)) { Remove-Item 'HKLM:\SOFTWARE\Netease' -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 reg delete "HKLM\SOFTWARE\WOW6432Node\NemuServer" /f >nul 2>&1
 rmdir /s /q "%ProgramData%\Netease\MuMuPlayerGlobal" >nul 2>&1
 rmdir /s /q "%ProgramData%\Netease\MumuPlayerRemote" >nul 2>&1
@@ -895,7 +895,9 @@ Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 
 Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MuMuPlayerGlobal' -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Path 'HKLM:\SOFTWARE\Netease\MuMuPlayerRemote' -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Path 'HKLM:\SOFTWARE\Netease\MuMuPlayerRemoteSetup' -Recurse -Force -ErrorAction SilentlyContinue
-try { Remove-Item -LiteralPath 'HKLM:\SOFTWARE\Netease' -Force -ErrorAction Stop } catch { }
+if ((Test-Path -LiteralPath 'HKLM:\SOFTWARE\Netease') -and -not (Get-ChildItem -LiteralPath 'HKLM:\SOFTWARE\Netease' -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+    try { Remove-Item -LiteralPath 'HKLM:\SOFTWARE\Netease' -Force -ErrorAction Stop } catch { }
+}
 Remove-Item -Path 'HKLM:\SOFTWARE\WOW6432Node\NemuServer' -Recurse -Force -ErrorAction SilentlyContinue
 $ErrorActionPreference = 'Continue'
 & sc.exe delete MuMuPlayerRemoteService 2>&1 | Out-Null
@@ -911,7 +913,7 @@ foreach ($d in @("$env:ProgramData\Netease\MuMuPlayerGlobal", "$env:ProgramData\
         Say "Removed launcher runtime traces: $d"
     }
 }
-if (Test-Path -LiteralPath "$env:ProgramData\Netease") {
+if ((Test-Path -LiteralPath "$env:ProgramData\Netease") -and -not (Get-ChildItem -LiteralPath "$env:ProgramData\Netease" -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
     try { Remove-Item -LiteralPath "$env:ProgramData\Netease" -Force -ErrorAction Stop } catch { }
 }
 $svcQ = (& sc.exe query MuMuPlayerRemoteService 2>&1 | Out-String)
