@@ -294,6 +294,21 @@ function Get-InstalledEngineVer($cfg, $instPath, [string]$type) {
     return $v
 }
 
+function Get-InstalledNxmainVer($cfg, [string]$instPath) {
+    $v = $null
+    if ($cfg -and $cfg.main) {
+        if ($cfg.main.version) { $v = [string]$cfg.main.version }
+        elseif ($cfg.main.player -and $cfg.main.player.version) { $v = [string]$cfg.main.player.version }
+    }
+    if (-not $v) {
+        $instNxExe = Join-Path $instPath 'nx_main\MuMuNxMain.exe'
+        if (Test-Path -LiteralPath $instNxExe) {
+            try { $v = (Get-Item -LiteralPath $instNxExe).VersionInfo.FileVersion } catch { }
+        }
+    }
+    return $v
+}
+
 $toInstallEngines = @()
 $addNxmain = $false
 $script:targetPreExisted = Test-Path -LiteralPath $targetFull
@@ -329,9 +344,7 @@ if ($script:targetPreExisted) {
 
             if ($nxmain) {
                 $instNxExe = Join-Path $instTree 'nx_main\MuMuNxMain.exe'
-                $instNxVer = if (Test-Path -LiteralPath $instNxExe) {
-                    try { (Get-Item -LiteralPath $instNxExe).VersionInfo.FileVersion } catch { $null }
-                } else { $null }
+                $instNxVer = Get-InstalledNxmainVer $installedCfg $instTree
 
                 if (-not (Test-Path -LiteralPath $instNxExe)) {
                     $addNxmain = $true
@@ -614,7 +627,7 @@ Say "VM storage dir ready: $targetFull\Netease\MuMuPlayer15\vms"
 if ($addNxmain) {
     Say ''
     Say '--- NX main launcher component (nxmain) ---' Cyan
-    $nxVer = if ($pv = (Get-ProductVersion)) { $pv } elseif ($nxVersion) { $nxVersion } else { '1.0.0.0' }
+    $nxVer = if ($nxVersion) { $nxVersion } elseif ($pv = (Get-ProductVersion)) { $pv } else { '1.0.0.0' }
     Install-Component $nxmain 'nxmain' $nxVer
     if (-not (Test-Path -LiteralPath "$inst\nx_main\MuMuNxMain.exe")) {
         Restore-StagedTarget
