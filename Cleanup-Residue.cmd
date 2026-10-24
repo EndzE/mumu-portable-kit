@@ -99,6 +99,7 @@ rmdir /s /q "%APPDATA%\Netease\MuMuPlayerGlobal" >nul 2>&1
 rmdir /s /q "%APPDATA%\Netease\MuMuVMM" >nul 2>&1
 rmdir "%APPDATA%\Netease" >nul 2>&1
 rmdir /s /q "%USERPROFILE%\.MUMUVMM" >nul 2>&1
+del /f /q "%USERPROFILE%\-*-windows.xml" >nul 2>&1
 
 echo.
 echo === Removing hypervisor runtimes in Program Files ===

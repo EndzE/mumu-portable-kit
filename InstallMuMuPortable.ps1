@@ -428,52 +428,8 @@ if ($installStaging) {
     }
 }
 
-# --- 3c. per-engine repair/normalize: Program Files runtime, COM registration, driver family ---
-# The engine's upgrade path replaces the shared runtime and unregisters the other engine's
-# COM classes and drivers; re-register and re-install each installed engine's own family
-# (validated: without this, older-engine devices fail with VERR_VIRTUALBOX_ACCESSDENIED /
-#  VERR_LAUNCH_DRIVER_ERROR after a newer engine was added).
-foreach ($t in $engineMap.Keys) {
-    $m = $engineMap[$t]
-    $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
-    if (-not (Test-Path -LiteralPath $hv)) { continue }
-    if (Test-Path -LiteralPath (Join-Path $hv 'comregister.cmd')) {
-        # Devices resolve the hypervisor via nx_device\<ver>\configs\device\hypervisor_config.json
-        # ("install_dir" = C:\Program Files\<install_name>). If that runtime is missing (e.g. after
-        # Cleanup-Residue removed it) every VM start in the device fails with
-        # VERR_RPC_SERVER_UNAVAILABLE - restore it from the engine-local copy and register COM
-        # from there (matches the installer-known-good layout).
-        $pfDir = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
-        if (-not (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe))) {
-            Say "Restoring $($m.label) hypervisor runtime to C:\Program Files\$($m.installName)..."
-            try {
-                New-Item -ItemType Directory -Path $pfDir -Force | Out-Null
-                Copy-Item -Path (Join-Path $hv '*') -Destination $pfDir -Recurse -Force
-            } catch { Say "[WARN] Could not restore the runtime: $($_.Exception.Message)" Yellow }
-        }
-        $regTarget = if (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe)) { $pfDir } else { $hv }
-        $svcExe = $null
-        try { $svcExe = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Classes\CLSID\$($m.clsid)\LocalServer32" -ErrorAction Stop).'(default)' } catch { }
-        $svcExePath = if ($svcExe) { $svcExe.Trim().Trim('"') } else { '' }
-        $registered = [bool]$svcExePath -and (Test-Path -LiteralPath $svcExePath)
-        if ($registered -and ($regTarget -ne $hv) -and (-not $svcExePath.StartsWith($regTarget, [StringComparison]::OrdinalIgnoreCase))) { $registered = $false }
-        if (-not $registered) {
-            Say "Registering $($m.label) COM classes ($regTarget)..."
-            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $regTarget + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
-            if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
-        }
-    }
-    if ((-not ((& sc.exe query $m.svc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) {
-        Say "Installing $($m.label) driver family..."
-        $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && load.cmd') -Wait -PassThru -WindowStyle Hidden
-        if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) driver install exited with $($p.ExitCode)" Yellow }
-    }
-    if ((-not ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'loadlwf.cmd'))) {
-        Say "Installing $($m.label) network filter..."
-        $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && loadlwf.cmd') -Wait -PassThru -WindowStyle Hidden
-        if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) network filter exited with $($p.ExitCode)" Yellow }
-    }
-}
+# --- 3c. note: host normalization (C:\Program Files runtime, COM registration, driver family) ---
+# Moved to Step 6 so host mutations are consolidated and respect the user's opt-in choice.
 
 # --- 4. shared folder -> inside the portable tree ---
 $cfgFile = "$inst\configs\main\vm_config.json"
@@ -616,8 +572,6 @@ exit /b 0
 '@
 Remove-Item -LiteralPath (Join-Path $targetFull 'Launch Engine.cmd') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $targetFull 'Launch MuMu.cmd') -Force -ErrorAction SilentlyContinue
-$mumuVmmDir = Join-Path $env:USERPROFILE '.MUMUVMM'
-if (-not (Test-Path -LiteralPath $mumuVmmDir)) { New-Item -ItemType Directory -Path $mumuVmmDir | Out-Null }
 foreach ($t in $engineMap.Keys) {
     $m = $engineMap[$t]
     if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $m.dir + "\shell\MuMuNxDevice.exe"))) {
@@ -822,6 +776,9 @@ reg delete "HKLM\SOFTWARE\WOW6432Node\NemuServer" /f >nul 2>&1
 rmdir /s /q "%ProgramData%\Netease\MuMuPlayerGlobal" >nul 2>&1
 rmdir /s /q "%ProgramData%\Netease\MumuPlayerRemote" >nul 2>&1
 rmdir "%ProgramData%\Netease" >nul 2>&1
+rem --- remove empty .MUMUVMM user dir and stray VirtualBox xml if present ---
+if exist "%USERPROFILE%\.MUMUVMM" rmdir "%USERPROFILE%\.MUMUVMM" >nul 2>&1
+del /f /q "%USERPROFILE%\-*-windows.xml" >nul 2>&1
 echo Done.
 echo.
 echo === Removing the Program Files runtime directories ===
@@ -921,48 +878,79 @@ NOTES
 
 # --- 6. driver: enable on this PC (optional) ---
 Say ''
-$q = (& sc.exe query MuMuVMMDrv 2>&1 | Out-String) + (& sc.exe query MuMuNxSup 2>&1 | Out-String)
-if ($q -match 'RUNNING') { Say 'MuMu driver present and running (set up by the engine) - nothing to do.' Green }
-elseif ($q -match 'SERVICE_NAME') {
-    $svc = if ($q -match 'MuMuVMMDrv') { 'MuMuVMMDrv' } else { 'MuMuNxSup' }
-    Say "MuMu driver present but not running - starting $svc..." Yellow
-    & sc.exe start $svc | Out-Null
-    & sc.exe query $svc
+$a = if ($Yes) { 'y' } else { Read-Host 'Enable the emulator driver on THIS PC now? (one-time, needed to run the emulator here) [Y/n]' }
+if ($a -match '^(n|no)$') {
+    Say 'Skipped. Unloading any driver installed during setup (run Enable-Driver.cmd later to use on any PC)...' Yellow
+    foreach ($t in $engineMap.Keys) {
+        $m = $engineMap[$t]
+        $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
+        if (Test-Path -LiteralPath (Join-Path $hv 'load.cmd')) {
+            Push-Location -LiteralPath $hv
+            try { & cmd.exe /c 'load.cmd --uninstall' } finally { Pop-Location }
+        }
+    }
+    foreach ($svcOld in 'MuMuVMMDrv', 'MuMuNxSup', 'MuMuVMMNetLwf', 'MuMuNxNetLwf') {
+        & sc.exe stop $svcOld 2>&1 | Out-Null
+        & sc.exe delete $svcOld 2>&1 | Out-Null
+    }
+    foreach ($sys in 'MuMuVMMNetLwf.sys', 'MuMuNxNetLwf.sys') {
+        $sp = Join-Path "$env:SystemRoot\System32\drivers" $sys
+        if (Test-Path -LiteralPath $sp) { Remove-Item -LiteralPath $sp -Force -ErrorAction SilentlyContinue }
+    }
+    foreach ($p in 'MuMuNxVbox', 'MuMuVMMVbox') {
+        $pfDir = Join-Path 'C:\Program Files' $p
+        if (Test-Path -LiteralPath $pfDir) { Remove-Item -LiteralPath $pfDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    $uProf = [Environment]::GetFolderPath('UserProfile')
+    $mumuVmm = Join-Path $uProf '.MUMUVMM'
+    if ((Test-Path -LiteralPath $mumuVmm) -and -not (Get-ChildItem -LiteralPath $mumuVmm -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        Remove-Item -LiteralPath $mumuVmm -Force -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem -LiteralPath $uProf -Filter '-*-windows.xml' -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 }
 else {
-    $a = if ($Yes) { 'y' } else { Read-Host 'Enable the emulator driver on THIS PC now? (one-time, needed to run the emulator here) [Y/n]' }
-    if ($a -match '^(n|no)$') { Say 'Skipped. To enable later: run Enable-Driver.cmd (as Administrator) in the target folder.' Yellow }
-    else {
-        foreach ($t in $engineMap.Keys) {
-            $m = $engineMap[$t]
-            $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
-            if (-not (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) { continue }
-            $dst = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
+    foreach ($t in $engineMap.Keys) {
+        $m = $engineMap[$t]
+        $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
+        if (-not (Test-Path -LiteralPath $hv)) { continue }
+        $pfDir = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
+        if (-not (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe))) {
             Say "Restoring $($m.label) hypervisor runtime to C:\Program Files\$($m.installName)..."
             try {
-                New-Item -ItemType Directory -Path $dst -Force | Out-Null
-                Copy-Item -Path (Join-Path $hv '*') -Destination $dst -Recurse -Force
+                New-Item -ItemType Directory -Path $pfDir -Force | Out-Null
+                Copy-Item -Path (Join-Path $hv '*') -Destination $pfDir -Recurse -Force
             } catch { Say "[WARN] Could not restore the runtime: $($_.Exception.Message)" Yellow }
-            if (Test-Path -LiteralPath (Join-Path $dst 'comregister.cmd')) {
-                $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $dst + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
-                if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
-            }
         }
-        Say 'Loading driver(s)...'
-        foreach ($t in $engineMap.Keys) {
-            $m = $engineMap[$t]
-            $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
-            if (-not (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) { continue }
-            Push-Location -LiteralPath $hv
-            try { & cmd.exe /c 'load.cmd' } finally { Pop-Location }
-            if (Test-Path -LiteralPath (Join-Path $hv 'loadlwf.cmd')) {
-                Push-Location -LiteralPath $hv
-                try { & cmd.exe /c 'loadlwf.cmd' } finally { Pop-Location }
-            }
+        $regTarget = if (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe)) { $pfDir } else { $hv }
+        $svcExe = $null
+        try { $svcExe = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Classes\CLSID\$($m.clsid)\LocalServer32" -ErrorAction Stop).'(default)' } catch { }
+        $svcExePath = if ($svcExe) { $svcExe.Trim().Trim('"') } else { '' }
+        $registered = [bool]$svcExePath -and (Test-Path -LiteralPath $svcExePath)
+        if ($registered -and ($regTarget -ne $hv) -and (-not $svcExePath.StartsWith($regTarget, [StringComparison]::OrdinalIgnoreCase))) { $registered = $false }
+        if (-not $registered) {
+            Say "Registering $($m.label) COM classes ($regTarget)..."
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $regTarget + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
+            if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
         }
-        Say 'Driver status:'
-        & sc.exe query MuMuVMMDrv
-        if ($LASTEXITCODE -ne 0) { & sc.exe query MuMuNxSup }
+        if ((-not ((& sc.exe query $m.svc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) {
+            Say "Installing $($m.label) driver family..."
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && load.cmd') -Wait -PassThru -WindowStyle Hidden
+            if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) driver install exited with $($p.ExitCode)" Yellow }
+        } else {
+            & sc.exe start $m.svc 2>&1 | Out-Null
+        }
+        if ((-not ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'loadlwf.cmd'))) {
+            Say "Installing $($m.label) network filter..."
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && loadlwf.cmd') -Wait -PassThru -WindowStyle Hidden
+            if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) network filter exited with $($p.ExitCode)" Yellow }
+        }
+    }
+    Say 'Driver status:'
+    foreach ($t in $engineMap.Keys) {
+        $m = $engineMap[$t]
+        if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $m.dir))) {
+            & sc.exe query $m.svc
+        }
     }
 }
 
@@ -1025,6 +1013,15 @@ if ($svcQ -notmatch '1060') {
 $docsShared = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'MuMuSharedFolder'
 if ((Test-Path -LiteralPath $docsShared) -and -not (Get-ChildItem -LiteralPath $docsShared -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
     try { Remove-Item -LiteralPath $docsShared -Force -ErrorAction Stop; Say 'Removed empty Documents\MuMuSharedFolder (unused - the share folder lives in Data)' } catch { }
+}
+$uProf = [Environment]::GetFolderPath('UserProfile')
+$mumuVmm = Join-Path $uProf '.MUMUVMM'
+if ((Test-Path -LiteralPath $mumuVmm) -and -not (Get-ChildItem -LiteralPath $mumuVmm -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+    try { Remove-Item -LiteralPath $mumuVmm -Force -ErrorAction Stop; Say 'Removed empty %USERPROFILE%\.MUMUVMM' } catch { }
+}
+$vboxXmls = @(Get-ChildItem -LiteralPath $uProf -Filter '-*-windows.xml' -Force -ErrorAction SilentlyContinue)
+foreach ($x in $vboxXmls) {
+    try { Remove-Item -LiteralPath $x.FullName -Force -ErrorAction Stop; Say "Removed VirtualBox machine trace: $($x.FullName)" } catch { }
 }
 
 Say ''
