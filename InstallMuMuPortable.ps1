@@ -243,7 +243,9 @@ $driveName = (Split-Path -Qualifier $targetFull).TrimEnd(':')
 $free = (Get-PSDrive $driveName).Free
 $needGB = if ($toInstallEngines.Count -gt 0) { 4 + 3 * ($toInstallEngines.Count - 1) } elseif ($addNxmain) { 1 } else { 0 }
 if ($needGB -gt 0 -and $free -lt ($needGB * 1GB)) { Die ("Not enough free space on ${driveName}: (need about $needGB GB, found {0:N1} GB)." -f ($free / 1GB)) }
-if (Get-Process -Name MuMuNxDevice, MuMuNxSVC, MuMuNxHeadless -ErrorAction SilentlyContinue) { Die 'MuMu is currently running - close it first.' }
+$mumuProcs = @('MuMuNxDevice', 'MuMuNxSVC', 'MuMuNxHeadless', 'MuMuVMMHeadless', 'MuMuVMMSVC', 'MuMuVMMManage', 'MuMuNxMain', 'MuMuNxLauncher', 'MuMuNxService', 'MuMuManager', 'MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd')
+$running = @(Get-Process -Name $mumuProcs -ErrorAction SilentlyContinue)
+if ($running.Count -gt 0) { Die "MuMu is currently running ($(($running.Name | Select-Object -Unique) -join ', ')) - close it first." }
 if ($toInstallEngines.Count -gt 0) {
     $rtDirs = @('C:\Program Files\MuMuNxVbox\Hypervisor', 'C:\Program Files\MuMuVMMVbox\Hypervisor')
     foreach ($t in $engineMap.Keys) {
