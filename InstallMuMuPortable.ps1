@@ -32,15 +32,14 @@ function Restore-Environment {
 }
 
 function Stop-RunningMuMuHostProcesses {
-    cmd.exe /c "sc stop MuMuPlayerRemoteService >nul 2>&1"
-    cmd.exe /c "sc delete MuMuPlayerRemoteService >nul 2>&1"
+    & sc.exe stop MuMuPlayerRemoteService 2>&1 | Out-Null
+    & sc.exe delete MuMuPlayerRemoteService 2>&1 | Out-Null
     Start-Sleep -Milliseconds 200
-    foreach ($pn in @('MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd',
-                      'MuMuNxMain', 'MuMuNxLauncher', 'MuMuNxService', 'MuMuManager',
-                      'MuMuNxDevice', 'MuMuNxSVC', 'MuMuNxHeadless',
-                      'MuMuVMMHeadless', 'MuMuVMMSVC', 'MuMuVMMManage')) {
-        cmd.exe /c "taskkill /F /IM $pn.exe >nul 2>&1"
-    }
+    $pns = @('MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd',
+             'MuMuNxMain', 'MuMuNxLauncher', 'MuMuNxService', 'MuMuManager',
+             'MuMuNxDevice', 'MuMuNxSVC', 'MuMuNxHeadless',
+             'MuMuVMMHeadless', 'MuMuVMMSVC', 'MuMuVMMManage')
+    Stop-Process -Name $pns -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 300
 }
 
@@ -970,19 +969,7 @@ sc delete MuMuPlayerRemoteService >nul 2>&1
 sc stop MuMuPlayerRemoteService >nul 2>&1
 
 echo === Closing MuMu processes (if any) ===
-taskkill /F /IM MuMuNxDevice.exe >nul 2>&1
-taskkill /F /IM MuMuNxHeadless.exe >nul 2>&1
-taskkill /F /IM MuMuNxSVC.exe >nul 2>&1
-taskkill /F /IM MuMuNxMain.exe >nul 2>&1
-taskkill /F /IM MuMuNxLauncher.exe >nul 2>&1
-taskkill /F /IM MuMuNxService.exe >nul 2>&1
-taskkill /F /IM MuMuManager.exe >nul 2>&1
-taskkill /F /IM MuMuVMMHeadless.exe >nul 2>&1
-taskkill /F /IM MuMuVMMSVC.exe >nul 2>&1
-taskkill /F /IM MuMuVMMManage.exe >nul 2>&1
-taskkill /F /IM MuMuPlayerRemoteService.exe >nul 2>&1
-taskkill /F /IM MuMuPlayerRemoteBackend.exe >nul 2>&1
-taskkill /F /IM MuMuPlayerRemoteHealthd.exe >nul 2>&1
+taskkill /F /IM MuMuNxDevice.exe /IM MuMuNxHeadless.exe /IM MuMuNxSVC.exe /IM MuMuNxMain.exe /IM MuMuNxLauncher.exe /IM MuMuNxService.exe /IM MuMuManager.exe /IM MuMuVMMHeadless.exe /IM MuMuVMMSVC.exe /IM MuMuVMMManage.exe /IM MuMuPlayerRemoteService.exe /IM MuMuPlayerRemoteBackend.exe /IM MuMuPlayerRemoteHealthd.exe >nul 2>&1
 timeout /t 2 /nobreak >nul
 
 echo === Unloading driver(s) for every installed engine ===
@@ -1012,7 +999,7 @@ sc query MuMuNxNetLwf 2>nul || echo MuMuNxNetLwf not present (good).
 echo.
 echo === Removing MuMu virtual display device(s) and driver packages ===
 powershell -NoProfile -Command "$d=@(Get-PnpDevice -ErrorAction SilentlyContinue|Where-Object{$_.InstanceId -match 'MUMU' -or $_.FriendlyName -match 'MuMu'});foreach($x in $d){pnputil /remove-device $x.InstanceId|Out-Null};if($d.Count){'Removed PnP devices: '+$d.Count}else{'No MuMu PnP devices present'}"
-powershell -NoProfile -Command "$hits=@(try{Get-WindowsDriver -Online -ErrorAction Stop|Where-Object{$_.OriginalFileName -match 'mumu' -or $_.ProviderName -match 'mumu|netease'}|ForEach-Object{$_.Driver}}catch{@()});if(-not $hits){$cur=$null;foreach($l in [string[]](pnputil /enum-drivers)){if($l -match ':\s*(oem\d+\.inf)'){$cur=$Matches[1]}elseif($cur -and ($l -match ':\s*(.*)') -and ($Matches[1] -match 'mumu|netease')){$hits+=$cur;$cur=$null}}};$hits=@($hits|Select-Object -Unique);foreach($h in $hits){pnputil /delete-driver $h /uninstall /force|Out-Null};if($hits.Count){'Removed driver packages: '+($hits -join ', ')}else{'No MuMu driver packages present'}"
+powershell -NoProfile -Command "$hits=$null;$f=$false;try{$hits=@(Get-WindowsDriver -Online -ErrorAction Stop|Where-Object{$_.OriginalFileName -match 'mumu' -or $_.ProviderName -match 'mumu'}|ForEach-Object{$_.Driver})}catch{$f=$true};if($f){$hits=@();$cur=$null;foreach($l in [string[]](pnputil /enum-drivers)){if($l -match ':\s*(oem\d+\.inf)'){$cur=$Matches[1]}elseif($cur -and ($l -match ':\s*(.*)') -and ($Matches[1] -match 'mumu')){$hits+=$cur;$cur=$null}}};$hits=@($hits|Select-Object -Unique);foreach($h in $hits){pnputil /delete-driver $h /uninstall /force|Out-Null};if($hits.Count){'Removed driver packages: '+($hits -join ', ')}else{'No MuMu driver packages present'}}"
 echo.
 echo === Removing firewall rules ===
 powershell -NoProfile -Command "$n='MuMuVMMSVC','MuMuVMMHeadless','MuMuNxDevice','NXDeviceAria2','MuMuNxLauncher','MuMuNxMain','NXMainAria2';$r=@(Get-NetFirewallRule -ErrorAction SilentlyContinue|Where-Object{$_.DisplayName -in $n});if($r.Count){$r|Remove-NetFirewallRule;'Removed firewall rules: '+($r.DisplayName -join ', ')}else{'No MuMu firewall rules present'}"
