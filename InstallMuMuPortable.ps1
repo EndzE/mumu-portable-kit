@@ -682,7 +682,7 @@ set "LOG=%DATA%\logs"
 
 if not exist "%INST%" (
   echo [ERROR] MuMu install folder not found:
-  echo         %INST%
+  echo         "%INST%"
   exit /b 1
 )
 
@@ -712,7 +712,7 @@ set "TMP=%DATA%\Temp"
 set "VBOX_USER_HOME=%DATA%\VBox"
 
 if not exist "%SHELL%\MuMuNxDevice.exe" (
-  echo [ERROR] MuMuNxDevice.exe not found in %SHELL%
+  echo [ERROR] MuMuNxDevice.exe not found in "%SHELL%"
   exit /b 1
 )
 
@@ -744,7 +744,7 @@ set "LOG=%DATA%\logs"
 
 if not exist "%INST%" (
   echo [ERROR] MuMu install folder not found:
-  echo         %INST%
+  echo         "%INST%"
   exit /b 1
 )
 
@@ -779,7 +779,7 @@ rem --- engine user-profile dir the VMM COM layer needs (recreate if a cleanup r
 if not exist "%USERPROFILE%\.MUMUVMM" md "%USERPROFILE%\.MUMUVMM" >nul 2>&1
 
 if not exist "%INST%\nx_main\MuMuNxMain.exe" (
-  echo [ERROR] Launcher not found: %INST%\nx_main\MuMuNxMain.exe
+  echo [ERROR] Launcher not found: "%INST%\nx_main\MuMuNxMain.exe"
   echo         This install was created without the nxmain launcher component.
   exit /b 1
 )
