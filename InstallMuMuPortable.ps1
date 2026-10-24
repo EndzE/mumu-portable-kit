@@ -80,6 +80,19 @@ function Get-LogDirectory([string]$tag) {
     return (Join-Path $env:TEMP "MuMuPlayerGlobal\$sub")
 }
 
+function Get-DriveFreeBytes([string]$driveLetter) {
+    if (-not $driveLetter) { return $null }
+    try {
+        $di = [System.IO.DriveInfo]::new($driveLetter)
+        if ($di.IsReady) { return $di.AvailableFreeSpace }
+    } catch { }
+    try {
+        $psd = Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue
+        if ($psd -and $null -ne $psd.Free) { return $psd.Free }
+    } catch { }
+    return $null
+}
+
 function Die($m) { Say "`n[ERROR] $m" Red; Restore-StagedTarget; Restore-Environment; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
 trap { Say "`n[ERROR] $_" Red; Restore-StagedTarget; Restore-Environment; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
 
@@ -150,8 +163,18 @@ if ($target -match '^[A-Za-z]:$') { Die 'Please specify a folder, not a drive ro
 try { $targetFull = [IO.Path]::GetFullPath($target) } catch { Die "Invalid path: $target" }
 $script:activeRoot = $targetFull
 if ($targetFull -match '[&|<>^"]') { Die 'Target path contains unsupported characters (& | < > ^ "). Pick a simpler folder name.' }
-foreach ($bad in @($env:windir, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
-    if ($targetFull -like "$bad*") { Die "Refusing to install into $bad - pick your own folder." }
+if ($targetFull.StartsWith('\\')) { Die 'UNC network paths (\\server\share) are not supported. Install to a local drive (e.g. C: or D:).' }
+
+$badDirs = @($env:windir, $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432, $env:ProgramData) |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') } |
+    Select-Object -Unique
+
+foreach ($bad in $badDirs) {
+    if ($targetFull.Equals($bad, [StringComparison]::OrdinalIgnoreCase) -or
+        $targetFull.StartsWith($bad + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        Die "Refusing to install into $bad - pick your own folder."
+    }
 }
 $kitDirFull = [IO.Path]::GetFullPath($kitDir).TrimEnd('\')
 if ($targetFull -eq $kitDirFull -or $kitDirFull.StartsWith($targetFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -289,10 +312,34 @@ Put the mumu15 (Android 15) and/or nemux (Android 12) engine exe next to this sc
     $addNxmain = [bool]$nxmain
 }
 
-$driveName = (Split-Path -Qualifier $targetFull).TrimEnd(':')
-$free = (Get-PSDrive $driveName).Free
+$driveName = if ($targetFull -match '^([A-Za-z]):') { $Matches[1] } else { $null }
+$sysDriveName = if ($env:SystemDrive) { $env:SystemDrive.TrimEnd(':') } else { 'C' }
 $needGB = if ($toInstallEngines.Count -gt 0) { 4 + 3 * ($toInstallEngines.Count - 1) } elseif ($addNxmain) { 1 } else { 0 }
-if ($needGB -gt 0 -and $free -lt ($needGB * 1GB)) { Die ("Not enough free space on ${driveName}: (need about $needGB GB, found {0:N1} GB)." -f ($free / 1GB)) }
+$sysNeedGB = if ($toInstallEngines.Count -gt 0) { 2 } else { 1 }
+
+if ($driveName -and $driveName.Equals($sysDriveName, [StringComparison]::OrdinalIgnoreCase)) {
+    $extraGB = if ($toInstallEngines.Count -gt 0) { 2 } else { 0 }
+    $totalNeedGB = $needGB + $extraGB
+    if ($totalNeedGB -gt 0) {
+        $free = Get-DriveFreeBytes $driveName
+        if ($null -ne $free -and $free -lt ($totalNeedGB * 1GB)) {
+            Die ("Not enough free space on ${driveName}: (need about $totalNeedGB GB for portable tree and hypervisor drivers, found {0:N1} GB)." -f ($free / 1GB))
+        }
+    }
+} else {
+    if ($driveName -and $needGB -gt 0) {
+        $free = Get-DriveFreeBytes $driveName
+        if ($null -ne $free -and $free -lt ($needGB * 1GB)) {
+            Die ("Not enough free space on ${driveName}: (need about $needGB GB, found {0:N1} GB)." -f ($free / 1GB))
+        }
+    }
+    if ($toInstallEngines.Count -gt 0) {
+        $sysFree = Get-DriveFreeBytes $sysDriveName
+        if ($null -ne $sysFree -and $sysFree -lt ($sysNeedGB * 1GB)) {
+            Die ("Not enough free space on system drive ${sysDriveName}: for hypervisor drivers (need about $sysNeedGB GB, found {0:N1} GB)." -f ($sysFree / 1GB))
+        }
+    }
+}
 $mumuProcs = @('MuMuNxDevice', 'MuMuNxSVC', 'MuMuNxHeadless', 'MuMuVMMHeadless', 'MuMuVMMSVC', 'MuMuVMMManage', 'MuMuNxMain', 'MuMuNxLauncher', 'MuMuNxService', 'MuMuManager', 'MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd')
 $running = @(Get-Process -Name $mumuProcs -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) { Die "MuMu is currently running ($(($running.Name | Select-Object -Unique) -join ', ')) - close it first." }
