@@ -30,12 +30,42 @@ function Restore-Environment {
     }
 }
 
+function Stop-RunningMuMuHostProcesses {
+    & sc.exe stop MuMuPlayerRemoteService 2>&1 | Out-Null
+    & sc.exe delete MuMuPlayerRemoteService 2>&1 | Out-Null
+    Start-Sleep -Milliseconds 200
+    foreach ($pn in @('MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd',
+                      'MuMuNxMain', 'MuMuNxLauncher', 'MuMuNxService', 'MuMuManager',
+                      'MuMuNxDevice', 'MuMuNxSVC', 'MuMuNxHeadless',
+                      'MuMuVMMHeadless', 'MuMuVMMSVC', 'MuMuVMMManage')) {
+        & taskkill.exe /F /IM "$pn.exe" 2>&1 | Out-Null
+    }
+    Start-Sleep -Milliseconds 300
+}
+
+function Move-DirectoryWithMerge([string]$source, [string]$destination) {
+    if (-not (Test-Path -LiteralPath $destination)) {
+        Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+        return
+    }
+    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+        $destChild = Join-Path $destination $_.Name
+        if ($_.PSIsContainer) {
+            Move-DirectoryWithMerge $_.FullName $destChild
+        } else {
+            Move-Item -LiteralPath $_.FullName -Destination $destChild -Force -ErrorAction Stop
+        }
+    }
+    Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
+}
+
 function Restore-StagedTarget {
     if (-not $script:stagingRoot) { return }
     $staged = $script:stagingRoot
     $final = $targetFull
     $script:stagingRoot = $null
     if (-not (Test-Path -LiteralPath $staged)) { return }
+    Stop-RunningMuMuHostProcesses
     if (-not $script:targetPreExisted) {
         $stagedItems = @(Get-ChildItem -LiteralPath $staged -Force -ErrorAction SilentlyContinue)
         if ($stagedItems.Count -eq 0) {
@@ -46,13 +76,8 @@ function Restore-StagedTarget {
         }
         return
     }
-    if (Test-Path -LiteralPath $final) {
-        Say "[WARN] Staged install left at $staged (target already exists)." Yellow
-        $script:activeRoot = $staged
-        return
-    }
     try {
-        Move-Item -LiteralPath $staged -Destination $final -ErrorAction Stop
+        Move-DirectoryWithMerge $staged $final
         Say "Moved staged install back to $final." Yellow
         $script:activeRoot = $final
         $script:inst = Join-Path $final 'Netease\MuMuPlayer15'
@@ -551,11 +576,9 @@ if ($addNxmain) {
 }
 
 # --- move the staged tree back to the requested path before host repair/scripts ---
+Stop-RunningMuMuHostProcesses
 if ($installStaging) {
-    if (Test-Path -LiteralPath $targetFull) {
-        Die "The target folder was recreated during install; staged files are in $installStaging."
-    }
-    Move-Item -LiteralPath $installStaging -Destination $targetFull -ErrorAction Stop
+    Move-DirectoryWithMerge $installStaging $targetFull
     $script:stagingRoot = $null
     $script:activeRoot = $targetFull
     $installRoot = $targetFull
@@ -1180,13 +1203,7 @@ if ((Test-Path -LiteralPath 'HKLM:\SOFTWARE\Netease') -and -not (Get-ChildItem -
 }
 Remove-Item -Path 'HKLM:\SOFTWARE\WOW6432Node\NemuServer' -Recurse -Force -ErrorAction SilentlyContinue
 $ErrorActionPreference = 'Continue'
-& sc.exe delete MuMuPlayerRemoteService 2>&1 | Out-Null
-& sc.exe stop MuMuPlayerRemoteService 2>&1 | Out-Null
-Start-Sleep -Milliseconds 300
-foreach ($pn in @('MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPlayerRemoteHealthd')) {
-    & taskkill.exe /F /IM "$pn.exe" 2>&1 | Out-Null
-}
-Start-Sleep -Milliseconds 500
+Stop-RunningMuMuHostProcesses
 foreach ($d in @("$env:ProgramData\Netease\MuMuPlayerGlobal", "$env:ProgramData\Netease\MumuPlayerRemote")) {
     if (Test-Path -LiteralPath $d) {
         try {
