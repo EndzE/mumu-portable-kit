@@ -112,7 +112,7 @@ function Sanitize-InstallConfig([string]$cfgPath, [string]$currentInst) {
                 $json.engines.PSObject.Properties.Remove($r)
             }
         }
-        $json | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $cfgPath -Encoding UTF8
+        [IO.File]::WriteAllText($cfgPath, ($json | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
     } catch { }
 }
 
