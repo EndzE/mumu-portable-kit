@@ -1,0 +1,11 @@
+# Setup packages
+MuMu-setup-*.exe
+*.exe
+
+# Archive releases
+win-6.8.5 release.7z
+*.7z
+*.zip
+
+# Logs
+*.log

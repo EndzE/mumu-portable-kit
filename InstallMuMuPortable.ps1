@@ -477,10 +477,9 @@ if exist "%MUMU_CFG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f
 set "MUMU_ROOT="
 set "MUMU_CFG="
 
-sc query MuMuVMMDrv >nul 2>&1
-if errorlevel 1 sc query MuMuNxSup >nul 2>&1
+sc query @@SVC@@ 2>nul | findstr "RUNNING" >nul 2>&1
 if errorlevel 1 (
-  echo [WARN] MuMu driver MuMuVMMDrv/MuMuNxSup is not installed on this PC.
+  echo [WARN] MuMu driver (@@SVC@@) is not installed or not running on this PC.
   echo        Run "Enable-Driver.cmd" as Administrator once, then relaunch.
   echo        MuMu cannot boot a device without its driver - aborting.
   echo.
@@ -540,10 +539,11 @@ if exist "%MUMU_CFG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f
 set "MUMU_ROOT="
 set "MUMU_CFG="
 
-sc query MuMuVMMDrv >nul 2>&1
-if errorlevel 1 sc query MuMuNxSup >nul 2>&1
-if errorlevel 1 (
-  echo [WARN] MuMu driver MuMuVMMDrv/MuMuNxSup is not installed on this PC.
+set "DRV_OK="
+sc query MuMuVMMDrv 2>nul | findstr "RUNNING" >nul 2>&1 && set "DRV_OK=1"
+sc query MuMuNxSup 2>nul | findstr "RUNNING" >nul 2>&1 && set "DRV_OK=1"
+if not defined DRV_OK (
+  echo [WARN] MuMu driver (MuMuVMMDrv/MuMuNxSup) is not installed or not running on this PC.
   echo        Run "Enable-Driver.cmd" as Administrator once, then relaunch.
   echo        MuMu cannot boot a device without its driver - aborting.
   echo.
@@ -575,7 +575,7 @@ Remove-Item -LiteralPath (Join-Path $targetFull 'Launch MuMu.cmd') -Force -Error
 foreach ($t in $engineMap.Keys) {
     $m = $engineMap[$t]
     if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $m.dir + "\shell\MuMuNxDevice.exe"))) {
-        $content = $launchEngineTpl.Replace('@@A@@', $m.dir)
+        $content = $launchEngineTpl.Replace('@@A@@', $m.dir).Replace('@@SVC@@', $m.svc)
         [IO.File]::WriteAllText((Join-Path $targetFull ("Launch " + $m.label + ".cmd")), $content, [Text.Encoding]::ASCII)
         Say "Launch script ready: Launch $($m.label).cmd"
     }
@@ -932,11 +932,13 @@ else {
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $regTarget + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
         }
-        if ((-not ((& sc.exe query $m.svc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) {
+        $svcStatus = & sc.exe query $m.svc 2>&1 | Out-String
+        if (($svcStatus -notmatch 'SERVICE_NAME') -and (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) {
             Say "Installing $($m.label) driver family..."
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && load.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) driver install exited with $($p.ExitCode)" Yellow }
-        } else {
+        } elseif ($svcStatus -match 'SERVICE_NAME' -and $svcStatus -notmatch 'RUNNING') {
+            Say "Starting $($m.label) driver service ($($m.svc))..."
             & sc.exe start $m.svc 2>&1 | Out-Null
         }
         if ((-not ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'loadlwf.cmd'))) {
