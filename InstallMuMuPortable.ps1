@@ -648,28 +648,27 @@ setlocal EnableExtensions
 net session >nul 2>&1
 if errorlevel 1 (
   echo Requesting Administrator rights...
-  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  set "SELF=%~f0"
+  powershell -NoProfile -Command "Start-Process -FilePath $env:SELF -Verb RunAs"
   exit /b
 )
 
 echo MuMu Player - offline mode: block ALL MuMu network access
 echo ========================================================
-echo This PC-wide Windows Firewall change adds Inbound + Outbound
-echo BLOCK rules for every MuMu executable, tagged with a group
-echo named after THIS folder - several portable setups on one PC
-echo keep separate offline switches and never overwrite each other.
-echo The rules (incl. the shared C:\Program Files runtimes) override
-echo the allow rules MuMu's own installers added, so the emulator
-echo runs fully offline. Local device use, adb and the shared
-echo folder are unaffected (no loopback filtering).
+echo Adds Inbound + Outbound BLOCK rules for every MuMu executable.
+echo Folder-specific executables are tagged for THIS folder; shared
+echo C:\Program Files runtimes (Hypervisor\*.exe) are tagged as shared.
+echo Block rules override the allow rules MuMu's own installers added,
+echo so the emulator runs fully offline. Local device use, adb and
+echo the shared folder are unaffected (no loopback filtering).
 echo Re-run this script after moving the folder or updating a
-echo component. Run Allow-Internet.cmd to revert THIS folder only.
+echo component. Run Allow-Internet.cmd to unblock.
 echo.
 
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "MUMU_ROOT=%ROOT%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$g='MuMu Portable Offline ('+$env:MUMU_ROOT+')';$t=Join-Path $env:MUMU_ROOT 'Netease\MuMuPlayer15';$d=@();if(Test-Path (Join-Path $t 'nx_main')){$d+=Join-Path $t 'nx_main'};foreach($v in @(Get-ChildItem (Join-Path $t 'nx_device') -Directory -ErrorAction SilentlyContinue)){$d+=Join-Path $v.FullName 'shell';$d+=Join-Path $v.FullName 'device'};$d+='C:\Program Files\MuMuNxVbox\Hypervisor','C:\Program Files\MuMuVMMVbox\Hypervisor';$x=@($d|Where-Object{Test-Path $_}|ForEach-Object{Get-ChildItem $_ -Recurse -Filter *.exe -ErrorAction SilentlyContinue});$old=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group 'MuMu Portable Offline' -ErrorAction SilentlyContinue);if($old.Count){$old|Remove-NetFirewallRule};foreach($e in $x){New-NetFirewallRule -DisplayName ('MuMuOffline '+$e.Name+' out') -Group $g -Program $e.FullName -Direction Outbound -Action Block -Profile Any|Out-Null;New-NetFirewallRule -DisplayName ('MuMuOffline '+$e.Name+' in') -Group $g -Program $e.FullName -Direction Inbound -Action Block -Profile Any|Out-Null};$n=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue);'Blocked exes: '+@($x).Count+'   rules now: '+$n.Count+'   (stale removed: '+$old.Count+')'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$g='MuMu Portable Offline ('+$env:MUMU_ROOT+')';$gShared='MuMu Portable Offline (Shared Runtime)';$t=Join-Path $env:MUMU_ROOT 'Netease\MuMuPlayer15';$x=@();if(Test-Path -LiteralPath $t){$x+=Get-ChildItem -LiteralPath $t -Recurse -Filter *.exe -ErrorAction SilentlyContinue};$xShared=@();foreach($p in 'C:\Program Files\MuMuNxVbox\Hypervisor','C:\Program Files\MuMuVMMVbox\Hypervisor'){if(Test-Path -LiteralPath $p){$xShared+=Get-ChildItem -LiteralPath $p -Recurse -Filter *.exe -ErrorAction SilentlyContinue}};$old=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group $gShared -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group 'MuMu Portable Offline' -ErrorAction SilentlyContinue);if($old.Count){$old|Remove-NetFirewallRule};foreach($e in $x){New-NetFirewallRule -DisplayName ('MuMuOffline '+$e.Name+' out') -Group $g -Program $e.FullName -Direction Outbound -Action Block -Profile Any|Out-Null;New-NetFirewallRule -DisplayName ('MuMuOffline '+$e.Name+' in') -Group $g -Program $e.FullName -Direction Inbound -Action Block -Profile Any|Out-Null};foreach($e in $xShared){New-NetFirewallRule -DisplayName ('MuMuOffline Shared '+$e.Name+' out') -Group $gShared -Program $e.FullName -Direction Outbound -Action Block -Profile Any|Out-Null;New-NetFirewallRule -DisplayName ('MuMuOffline Shared '+$e.Name+' in') -Group $gShared -Program $e.FullName -Direction Inbound -Action Block -Profile Any|Out-Null};$totalExes=@($x)+@($xShared);$n=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group $gShared -ErrorAction SilentlyContinue);'Blocked exes: '+$totalExes.Count+' (portable: '+@($x).Count+', shared: '+@($xShared).Count+')   rules now: '+$n.Count+'   (stale removed: '+$old.Count+')'"
 set "MUMU_ROOT="
 echo.
 pause
@@ -683,7 +682,8 @@ setlocal EnableExtensions
 net session >nul 2>&1
 if errorlevel 1 (
   echo Requesting Administrator rights...
-  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  set "SELF=%~f0"
+  powershell -NoProfile -Command "Start-Process -FilePath $env:SELF -Verb RunAs"
   exit /b
 )
 
@@ -692,7 +692,7 @@ echo ============================================================
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "MUMU_ROOT=%ROOT%"
-powershell -NoProfile -Command "$g='MuMu Portable Offline ('+$env:MUMU_ROOT+')';$r=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group 'MuMu Portable Offline' -ErrorAction SilentlyContinue);if($r.Count){$r|Remove-NetFirewallRule;'Removed offline block rules: '+$r.Count}else{'No offline block rules present.'}"
+powershell -NoProfile -Command "$g='MuMu Portable Offline ('+$env:MUMU_ROOT+')';$gShared='MuMu Portable Offline (Shared Runtime)';$r=@(Get-NetFirewallRule -Group $g -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group $gShared -ErrorAction SilentlyContinue)+@(Get-NetFirewallRule -Group 'MuMu Portable Offline' -ErrorAction SilentlyContinue);if($r.Count){$r|Remove-NetFirewallRule;'Removed offline block rules: '+$r.Count}else{'No offline block rules present.'}"
 set "MUMU_ROOT="
 echo.
 pause
@@ -921,7 +921,7 @@ else {
             Say "Restoring $($m.label) hypervisor runtime to C:\Program Files\$($m.installName)..."
             try {
                 New-Item -ItemType Directory -Path $pfDir -Force | Out-Null
-                Copy-Item -Path (Join-Path $hv '*') -Destination $pfDir -Recurse -Force
+                Get-ChildItem -LiteralPath $hv | Copy-Item -Destination $pfDir -Recurse -Force
             } catch { Say "[WARN] Could not restore the runtime: $($_.Exception.Message)" Yellow }
         }
         $regTarget = if (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe)) { $pfDir } else { $hv }
