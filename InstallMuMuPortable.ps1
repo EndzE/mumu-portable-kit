@@ -24,7 +24,7 @@ function Restore-StagedTarget {
         if (Get-Command Update-StagedPaths -ErrorAction SilentlyContinue) {
             $instFinal = Join-Path $final 'Netease\MuMuPlayer15'
             $dataFinal = Join-Path $final 'Data'
-            foreach ($root in @((Join-Path $instFinal 'configs'), (Join-Path $instFinal 'nx_device'), (Join-Path $instFinal 'nx_main'), (Join-Path $dataFinal 'Roaming'), (Join-Path $dataFinal 'Local'))) {
+            foreach ($root in @((Join-Path $instFinal 'configs'), (Join-Path $instFinal 'nx_device'), (Join-Path $instFinal 'nx_main'), (Join-Path $instFinal 'vms'), (Join-Path $dataFinal 'Roaming'), (Join-Path $dataFinal 'Local'), (Join-Path $dataFinal 'VBox'))) {
                 Update-StagedPaths -Root $root -Old $staged -New $final
             }
         }
@@ -288,7 +288,7 @@ function Update-StagedPaths([string]$Root, [string]$Old, [string]$New) {
     $newEsc = $New.Replace('\', '\\')
     $oldFwd = $Old.Replace('\', '/')
     $newFwd = $New.Replace('\', '/')
-    foreach ($f in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -match '^\.(json|vbox|vbox-prev|nemu|xml|ini|cfg|conf)$' })) {
         try {
             $bytes = [IO.File]::ReadAllBytes($f.FullName)
             $enc = New-Object Text.UTF8Encoding($false)
@@ -345,17 +345,20 @@ function Get-ProductVersion {
     try { return (Get-Content -LiteralPath (Join-Path $inst 'configs\main\install_config.json') -Raw | ConvertFrom-Json).product.version } catch { return $null }
 }
 function Invoke-ComponentOnce([string]$exePath, [string]$action, [string]$tag, [string]$ver) {
-    $bat = Join-Path $env:TEMP ('mumu-install-' + $tag + '-' + $action + '.cmd')
-    $line = '"' + $exePath + '" /txn_id=' + $txn + ' /action=' + $action +
-        ' /from_orchestrator=1 /silent=1 /auto_start=false /product_version=' + $ver +
-        ' /fchannel=' + $channel + ' /D=' + $inst
-    [IO.File]::WriteAllText($bat, "@echo off`r`n$line`r`n", [Text.Encoding]::ASCII)
+    $argList = @(
+        "/txn_id=$txn",
+        "/action=$action",
+        "/from_orchestrator=1",
+        "/silent=1",
+        "/auto_start=false",
+        "/product_version=$ver",
+        "/fchannel=$channel",
+        "/D=$inst"
+    )
     Say ''
     Say "--- $tag /action=$action running (can take several minutes, please wait) ---" Cyan
-    $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + $bat + '"') -Wait -PassThru -WindowStyle Hidden
-    $rc = $p.ExitCode
-    Remove-Item -LiteralPath $bat -Force -ErrorAction SilentlyContinue
-    return $rc
+    $p = Start-Process -FilePath $exePath -ArgumentList ($argList -join ' ') -Wait -PassThru -WindowStyle Hidden
+    return $p.ExitCode
 }
 function Invoke-Component([string]$exePath, [string]$action, [string]$tag, [string]$ver) {
     $rc = Invoke-ComponentOnce $exePath $action $tag $ver
@@ -423,7 +426,7 @@ if ($installStaging) {
     $env:TMP = "$data\Temp"
     $env:VBOX_USER_HOME = "$data\VBox"
     Say "Staged install moved to $targetFull." Green
-    foreach ($root in @((Join-Path $inst 'configs'), (Join-Path $inst 'nx_device'), (Join-Path $inst 'nx_main'), (Join-Path $data 'Roaming'), (Join-Path $data 'Local'))) {
+    foreach ($root in @((Join-Path $inst 'configs'), (Join-Path $inst 'nx_device'), (Join-Path $inst 'nx_main'), (Join-Path $inst 'vms'), (Join-Path $data 'Roaming'), (Join-Path $data 'Local'), (Join-Path $data 'VBox'))) {
         Update-StagedPaths -Root $root -Old $installStaging -New $targetFull
     }
 }
@@ -470,10 +473,10 @@ if not exist "%INST%" (
 
 for %%D in ("%DATA%" "%DATA%\Roaming" "%DATA%\Local" "%DATA%\Temp" "%DATA%\VBox" "%DATA%\MuMuSharedFolder" "%LOG%") do if not exist "%%~D" md "%%~D" >nul 2>&1
 
-rem --- keep the shared-folder path in sync with this folder's location (portable move support) ---
+rem --- keep paths in sync with this folder's location (portable move support) ---
 set "MUMU_ROOT=%ROOT%"
 set "MUMU_CFG=%INST%\configs\main\vm_config.json"
-if exist "%MUMU_CFG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f=$env:MUMU_CFG; $p=Join-Path $env:MUMU_ROOT 'Data\MuMuSharedFolder'; try { $j=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; if ($j.vm.sharefolder.user.path -ne $p) { $j.vm.sharefolder.user.path=$p; [IO.File]::WriteAllText($f, ($j | ConvertTo-Json -Depth 10)) } } catch { }"
+if exist "%MUMU_CFG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f=$env:MUMU_CFG; $newRoot=$env:MUMU_ROOT; $p=Join-Path $newRoot 'Data\MuMuSharedFolder'; try { $j=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; $oldP=$j.vm.sharefolder.user.path; if ($oldP -and $oldP -ne $p) { $oldRoot=$oldP.Substring(0, $oldP.Length - '\Data\MuMuSharedFolder'.Length); $j.vm.sharefolder.user.path=$p; [IO.File]::WriteAllText($f, ($j | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false))); if ($oldRoot -and (Test-Path -LiteralPath $newRoot)) { foreach ($ext in @('*.json','*.vbox','*.xml','*.nemu','*.ini')) { foreach ($file in @(Get-ChildItem -LiteralPath $newRoot -Recurse -File -Filter $ext -ErrorAction SilentlyContinue)) { try { $txt=[IO.File]::ReadAllText($file.FullName); if ($txt.Contains($oldRoot)) { $upd=$txt.Replace($oldRoot,$newRoot).Replace($oldRoot.Replace('\','\\'),$newRoot.Replace('\','\\')).Replace($oldRoot.Replace('\','/'),$newRoot.Replace('\','/')); [IO.File]::WriteAllText($file.FullName, $upd, (New-Object Text.UTF8Encoding($false))) } } catch {} } } } } } catch {}"
 set "MUMU_ROOT="
 set "MUMU_CFG="
 
@@ -532,10 +535,10 @@ if not exist "%INST%" (
 
 for %%D in ("%DATA%" "%DATA%\Roaming" "%DATA%\Local" "%DATA%\Temp" "%DATA%\VBox" "%DATA%\MuMuSharedFolder" "%LOG%") do if not exist "%%~D" md "%%~D" >nul 2>&1
 
-rem --- keep the shared-folder path in sync with this folder's location (portable move support) ---
+rem --- keep paths in sync with this folder's location (portable move support) ---
 set "MUMU_ROOT=%ROOT%"
 set "MUMU_CFG=%INST%\configs\main\vm_config.json"
-if exist "%MUMU_CFG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f=$env:MUMU_CFG; $p=Join-Path $env:MUMU_ROOT 'Data\MuMuSharedFolder'; try { $j=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; if ($j.vm.sharefolder.user.path -ne $p) { $j.vm.sharefolder.user.path=$p; [IO.File]::WriteAllText($f, ($j | ConvertTo-Json -Depth 10)) } } catch { }"
+if exist "%MUMU_CFG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f=$env:MUMU_CFG; $newRoot=$env:MUMU_ROOT; $p=Join-Path $newRoot 'Data\MuMuSharedFolder'; try { $j=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; $oldP=$j.vm.sharefolder.user.path; if ($oldP -and $oldP -ne $p) { $oldRoot=$oldP.Substring(0, $oldP.Length - '\Data\MuMuSharedFolder'.Length); $j.vm.sharefolder.user.path=$p; [IO.File]::WriteAllText($f, ($j | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false))); if ($oldRoot -and (Test-Path -LiteralPath $newRoot)) { foreach ($ext in @('*.json','*.vbox','*.xml','*.nemu','*.ini')) { foreach ($file in @(Get-ChildItem -LiteralPath $newRoot -Recurse -File -Filter $ext -ErrorAction SilentlyContinue)) { try { $txt=[IO.File]::ReadAllText($file.FullName); if ($txt.Contains($oldRoot)) { $upd=$txt.Replace($oldRoot,$newRoot).Replace($oldRoot.Replace('\','\\'),$newRoot.Replace('\','\\')).Replace($oldRoot.Replace('\','/'),$newRoot.Replace('\','/')); [IO.File]::WriteAllText($file.FullName, $upd, (New-Object Text.UTF8Encoding($false))) } } catch {} } } } } } catch {}"
 set "MUMU_ROOT="
 set "MUMU_CFG="
 
@@ -576,12 +579,12 @@ foreach ($t in $engineMap.Keys) {
     $m = $engineMap[$t]
     if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $m.dir + "\shell\MuMuNxDevice.exe"))) {
         $content = $launchEngineTpl.Replace('@@A@@', $m.dir).Replace('@@SVC@@', $m.svc)
-        [IO.File]::WriteAllText((Join-Path $targetFull ("Launch " + $m.label + ".cmd")), $content, [Text.Encoding]::ASCII)
+        [IO.File]::WriteAllText((Join-Path $targetFull ("Launch " + $m.label + ".cmd")), $content, (New-Object Text.UTF8Encoding($false)))
         Say "Launch script ready: Launch $($m.label).cmd"
     }
 }
 if (Test-Path -LiteralPath (Join-Path $inst 'nx_main\MuMuNxMain.exe')) {
-    [IO.File]::WriteAllText((Join-Path $targetFull 'Launch Launcher.cmd'), $launchLauncher, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $targetFull 'Launch Launcher.cmd'), $launchLauncher, (New-Object Text.UTF8Encoding($false)))
     Say 'Launch script ready: Launch Launcher.cmd'
 }
 
@@ -636,7 +639,7 @@ echo Done. If the drivers above show RUNNING you can launch MuMu with the Launch
 pause
 '@
 $enable = $enable.Replace('@@ENGINE_BLOCKS@@', $enableEngineBlocks)
-[IO.File]::WriteAllText((Join-Path $targetFull 'Enable-Driver.cmd'), $enable, [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $targetFull 'Enable-Driver.cmd'), $enable, (New-Object Text.UTF8Encoding($false)))
 
 $blockInternet = @'
 @echo off
@@ -671,7 +674,7 @@ set "MUMU_ROOT="
 echo.
 pause
 '@
-[IO.File]::WriteAllText((Join-Path $targetFull 'Block-Internet.cmd'), $blockInternet, [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $targetFull 'Block-Internet.cmd'), $blockInternet, (New-Object Text.UTF8Encoding($false)))
 
 $allowInternet = @'
 @echo off
@@ -694,7 +697,7 @@ set "MUMU_ROOT="
 echo.
 pause
 '@
-[IO.File]::WriteAllText((Join-Path $targetFull 'Allow-Internet.cmd'), $allowInternet, [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $targetFull 'Allow-Internet.cmd'), $allowInternet, (New-Object Text.UTF8Encoding($false)))
 Say 'Offline scripts ready: Block-Internet.cmd / Allow-Internet.cmd'
 
 $disable = @'
@@ -802,7 +805,7 @@ echo User-data traces (registry HKCU\Software\Netease, %%APPDATA%%\Netease,
 echo %%USERPROFILE%%\.MUMUNX, Documents\MuMuSharedFolder) are NOT removed by this script.
 pause
 '@
-[IO.File]::WriteAllText((Join-Path $targetFull 'Disable-Driver.cmd'), $disable, [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $targetFull 'Disable-Driver.cmd'), $disable, (New-Object Text.UTF8Encoding($false)))
 
 $readme = @'
 MuMu Player 12 Global - portable build
@@ -874,7 +877,7 @@ NOTES
 - Driver requirement: one-time Administrator action per PC (kernel
   driver). Everything else is fully portable.
 '@
-[IO.File]::WriteAllText((Join-Path $targetFull 'README.txt'), $readme, [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText((Join-Path $targetFull 'README.txt'), $readme, (New-Object Text.UTF8Encoding($false)))
 
 # --- 6. driver: enable on this PC (optional) ---
 Say ''
