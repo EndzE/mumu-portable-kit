@@ -45,6 +45,10 @@ function Stop-RunningMuMuHostProcesses {
 
 function Move-DirectoryWithMerge([string]$source, [string]$destination) {
     if (-not (Test-Path -LiteralPath $destination)) {
+        $parent = Split-Path -Parent $destination
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
         Move-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
         return
     }
