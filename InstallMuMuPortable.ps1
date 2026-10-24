@@ -767,10 +767,10 @@ $enable = @'
 setlocal EnableExtensions
 net session >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] This script must be run as Administrator.
-  echo         Right-click it and choose "Run as administrator".
-  pause
-  exit /b 1
+  echo Requesting Administrator rights...
+  set "SELF=%~f0"
+  powershell -NoProfile -Command "Start-Process -FilePath $env:SELF -Verb RunAs"
+  exit /b
 )
 
 set "ROOT=%~dp0"
@@ -856,10 +856,10 @@ $disable = @'
 setlocal EnableExtensions
 net session >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] This script must be run as Administrator.
-  echo         Right-click it and choose "Run as administrator".
-  pause
-  exit /b 1
+  echo Requesting Administrator rights...
+  set "SELF=%~f0"
+  powershell -NoProfile -Command "Start-Process -FilePath $env:SELF -Verb RunAs"
+  exit /b
 )
 
 set "INST=%~dp0Netease\MuMuPlayer15"
@@ -1129,14 +1129,22 @@ $icfgDir = Join-Path $realAppData 'Netease\MuMuPlayerGlobal'
 foreach ($f2 in @('install_config.json', 'new_install.json')) {
     $p = Join-Path $icfgDir $f2
     if (Test-Path -LiteralPath $p) {
-        Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
-        Say "Removed engine install record: $p"
+        try {
+            Remove-Item -LiteralPath $p -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $p)) {
+                Say "Removed engine install record: $p"
+            }
+        } catch { }
     }
 }
 $hcfg = Join-Path $realAppData 'Netease\MuMuNx\hypervisor_config.json'
 if (Test-Path -LiteralPath $hcfg) {
-    Remove-Item -LiteralPath $hcfg -Force -ErrorAction SilentlyContinue
-    Say "Removed engine install record: $hcfg"
+    try {
+        Remove-Item -LiteralPath $hcfg -Force -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $hcfg)) {
+            Say "Removed engine install record: $hcfg"
+        }
+    } catch { }
 }
 foreach ($d in @((Join-Path $icfgDir 'data'), $icfgDir, (Join-Path $realAppData 'Netease\MuMuNx'), (Join-Path $realAppData 'Netease'))) {
     if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
@@ -1146,9 +1154,23 @@ foreach ($d in @((Join-Path $icfgDir 'data'), $icfgDir, (Join-Path $realAppData 
 
 # --- 7b. NX launcher (nxmain) host traces: shortcuts, autostart, uninstall entry, remote service ---
 $deskLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'MuMuPlayer.lnk'
-if (Test-Path -LiteralPath $deskLnk) { Remove-Item -LiteralPath $deskLnk -Force -ErrorAction SilentlyContinue; Say "Removed desktop shortcut: $deskLnk" }
+if (Test-Path -LiteralPath $deskLnk) {
+    try {
+        Remove-Item -LiteralPath $deskLnk -Force -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $deskLnk)) {
+            Say "Removed desktop shortcut: $deskLnk"
+        }
+    } catch { }
+}
 $smpDir = Join-Path ([Environment]::GetFolderPath('Programs')) 'MuMuPlayer'
-if (Test-Path -LiteralPath $smpDir) { Remove-Item -LiteralPath $smpDir -Recurse -Force -ErrorAction SilentlyContinue; Say "Removed Start Menu folder: $smpDir" }
+if (Test-Path -LiteralPath $smpDir) {
+    try {
+        Remove-Item -LiteralPath $smpDir -Recurse -Force -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $smpDir)) {
+            Say "Removed Start Menu folder: $smpDir"
+        }
+    } catch { }
+}
 Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MuMuPlayerGlobal' -ErrorAction SilentlyContinue
 Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MuMuPlayerGlobal' -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Path 'HKLM:\SOFTWARE\Netease\MuMuPlayerRemote' -Recurse -Force -ErrorAction SilentlyContinue
@@ -1167,8 +1189,12 @@ foreach ($pn in @('MuMuPlayerRemoteService', 'MuMuPlayerRemoteBackend', 'MuMuPla
 Start-Sleep -Milliseconds 500
 foreach ($d in @("$env:ProgramData\Netease\MuMuPlayerGlobal", "$env:ProgramData\Netease\MumuPlayerRemote")) {
     if (Test-Path -LiteralPath $d) {
-        Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue
-        Say "Removed launcher runtime traces: $d"
+        try {
+            Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $d)) {
+                Say "Removed launcher runtime traces: $d"
+            }
+        } catch { }
     }
 }
 if ((Test-Path -LiteralPath "$env:ProgramData\Netease") -and -not (Get-ChildItem -LiteralPath "$env:ProgramData\Netease" -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
