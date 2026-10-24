@@ -2,7 +2,7 @@
 # Usage: double-click "InstallMuMuPortable.cmd" in the same folder as the
 #        MuMu engine exe (MuMu-setup-mumu15-V<version>-<channel>-<build>.exe)
 
-param([string]$Target)
+param([string]$Target, [switch]$Yes)
 
 $ErrorActionPreference = 'Stop'
 
@@ -33,8 +33,8 @@ function Restore-StagedTarget {
         Say "       The staged tree is at $staged" Yellow
     }
 }
-function Die($m) { Say "`n[ERROR] $m" Red; Restore-StagedTarget; Read-Host 'Press Enter to exit'; exit 1 }
-trap { Say "`n[ERROR] $_" Red; Restore-StagedTarget; Read-Host 'Press Enter to exit'; exit 1 }
+function Die($m) { Say "`n[ERROR] $m" Red; Restore-StagedTarget; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
+trap { Say "`n[ERROR] $_" Red; Restore-StagedTarget; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Die 'Run this via "InstallMuMuPortable.cmd" (double-click) so it can request Administrator rights.'
@@ -63,18 +63,9 @@ foreach ($t in $engineMap.Keys) {
         $engines += [pscustomobject]@{ type = $t; name = $exes[0].Name; path = $exes[0].FullName; version = $Matches[1] }
     }
 }
-if ($engines.Count -eq 0) {
-    Die "No engine package found in:`n  $kitDir`nPut the mumu15 (Android 15) and/or nemux (Android 12) engine exe next to this script and retry (at least one engine is required)."
-}
-$channel = 'gw-overseas12'
-Say 'Engine package(s):'
-foreach ($e in $engines) { Say "  $($e.name)  ($($engineMap[$e.type].label), version $($e.version))" }
-foreach ($e in $engines) {
-    if ($e.name -notmatch 'overseas') { Say "WARNING: $($e.name) does not look like an overseas/global build; the channel value may be wrong." Yellow }
-}
-
 # --- 1b. optional NX main launcher component (nxmain) next to this script ---
 $nxmain = $null
+$nxVersion = $null
 $nxExes = @(Get-ChildItem -LiteralPath $kitDir -File | Where-Object { $_.Name -match '^MuMu-setup-nxmain-V[\d.]+-.*\.exe$' })
 if ($nxExes.Count -gt 1) {
     Say 'Multiple nxmain packages found:' Yellow
@@ -83,8 +74,22 @@ if ($nxExes.Count -gt 1) {
 }
 if ($nxExes.Count -eq 1) {
     $nxmain = $nxExes[0].FullName
+    $null = $nxExes[0].Name -match '^MuMu-setup-nxmain-V([\d.]+)-'
+    $nxVersion = if ($Matches) { $Matches[1] } else { $null }
     Say "nxmain : $($nxExes[0].Name)  (optional - NX main launcher / engine manager)"
     if ($nxExes[0].Name -notmatch 'overseas') { Say 'WARNING: nxmain does not look like an overseas/global build.' Yellow }
+}
+
+if ($engines.Count -eq 0 -and -not $nxmain) {
+    Die "No engine or launcher package found in:`n  $kitDir`nPut the mumu15 (Android 15), nemux (Android 12), or nxmain (launcher) exe next to this script and retry."
+}
+$channel = 'gw-overseas12'
+if ($engines.Count -gt 0) {
+    Say 'Engine package(s):'
+    foreach ($e in $engines) { Say "  $($e.name)  ($($engineMap[$e.type].label), version $($e.version))" }
+    foreach ($e in $engines) {
+        if ($e.name -notmatch 'overseas') { Say "WARNING: $($e.name) does not look like an overseas/global build; the channel value may be wrong." Yellow }
+    }
 }
 
 # --- 2. target folder ---
@@ -103,52 +108,148 @@ if ($targetFull -eq $kitDirFull -or $kitDirFull.StartsWith($targetFull + '\', [S
     Die "Choose a target folder that does not contain the installer kit ($kitDirFull)."
 }
 
-$toInstallEngines = $engines
-$addNxmain = [bool]$nxmain
+function Is-VersionGreater([string]$vNew, [string]$vOld) {
+    if ([string]::IsNullOrWhiteSpace($vOld)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($vNew)) { return $false }
+    try {
+        return ([version]$vNew -gt [version]$vOld)
+    } catch {
+        return ($vNew -ne $vOld)
+    }
+}
+
+function Get-InstalledEngineVer($cfg, $instPath, [string]$type) {
+    $v = $null
+    if ($cfg -and $cfg.engines) {
+        $eObj = $cfg.engines.$type
+        if ($eObj) {
+            if ($eObj.version) { $v = [string]$eObj.version }
+            elseif ($eObj.player -and $eObj.player.version) { $v = [string]$eObj.player.version }
+        }
+    }
+    if (-not $v) {
+        $devExe = Join-Path $instPath ("nx_device\" + $engineMap[$type].dir + "\shell\MuMuNxDevice.exe")
+        if (Test-Path -LiteralPath $devExe) {
+            try { $v = (Get-Item -LiteralPath $devExe).VersionInfo.FileVersion } catch { }
+        }
+    }
+    return $v
+}
+
+$toInstallEngines = @()
+$addNxmain = $false
 if (Test-Path -LiteralPath $targetFull) {
     $items = @(Get-ChildItem -LiteralPath $targetFull -Force -ErrorAction SilentlyContinue)
     if ($items.Count -gt 0) {
         $instTree = Join-Path $targetFull 'Netease\MuMuPlayer15'
         if (Test-Path -LiteralPath $instTree) {
-            $existingTypes = @()
+            $installedCfg = $null
             $cfgGuard = Join-Path $instTree 'configs\main\install_config.json'
             if (Test-Path -LiteralPath $cfgGuard) {
-                try { $existingTypes = @((Get-Content -LiteralPath $cfgGuard -Raw | ConvertFrom-Json).engines.PSObject.Properties.Name) } catch { }
+                try { $installedCfg = (Get-Content -LiteralPath $cfgGuard -Raw | ConvertFrom-Json) } catch { }
             }
-            $nxMainInstalled = Test-Path -LiteralPath (Join-Path $instTree 'nx_main\MuMuNxMain.exe')
-            $missing = @()
-            foreach ($e in $engines) { if ($existingTypes -notcontains $e.type) { $missing += $e.type } }
-            if ($nxmain -and -not $nxMainInstalled) { $missing += 'nxmain' }
-            if ($missing.Count -eq 0) {
+
+            $missingOrUpgrade = @()
+            foreach ($e in $engines) {
+                $devExe = Join-Path $instTree ("nx_device\" + $engineMap[$e.type].dir + "\shell\MuMuNxDevice.exe")
+                $installedVer = Get-InstalledEngineVer $installedCfg $instTree $e.type
+                $needsInstall = $false
+
+                if (-not (Test-Path -LiteralPath $devExe)) {
+                    $needsInstall = $true
+                    $missingOrUpgrade += $engineMap[$e.type].label
+                } elseif (Is-VersionGreater $e.version $installedVer) {
+                    $needsInstall = $true
+                    $missingOrUpgrade += "$($engineMap[$e.type].label) (upgrade from $(if ($installedVer) { $installedVer } else { 'unknown' }) to $($e.version))"
+                }
+
+                if ($needsInstall) {
+                    $toInstallEngines += $e
+                }
+            }
+
+            if ($nxmain) {
+                $instNxExe = Join-Path $instTree 'nx_main\MuMuNxMain.exe'
+                $instNxVer = if (Test-Path -LiteralPath $instNxExe) {
+                    try { (Get-Item -LiteralPath $instNxExe).VersionInfo.FileVersion } catch { $null }
+                } else { $null }
+
+                if (-not (Test-Path -LiteralPath $instNxExe)) {
+                    $addNxmain = $true
+                    $missingOrUpgrade += 'nxmain (launcher UI)'
+                } elseif ($nxVersion -and (Is-VersionGreater $nxVersion $instNxVer)) {
+                    $addNxmain = $true
+                    $missingOrUpgrade += "nxmain (upgrade from $(if ($instNxVer) { $instNxVer } else { 'unknown' }) to $nxVersion)"
+                }
+            }
+
+            if ($engines.Count -eq 0) {
+                $hasAnyInstalledEngine = $false
+                foreach ($t in $engineMap.Keys) {
+                    if (Test-Path -LiteralPath (Join-Path $instTree ("nx_device\" + $engineMap[$t].dir + "\shell\MuMuNxDevice.exe"))) {
+                        $hasAnyInstalledEngine = $true
+                        break
+                    }
+                }
+                if (-not $hasAnyInstalledEngine) {
+                    Die "No engine package found in:
+  $kitDir
+Target $targetFull does not have an installed engine. At least one engine (Android 15 or 12) is required before adding the launcher UI."
+                }
+            }
+
+            if ($missingOrUpgrade.Count -eq 0) {
                 Say "$targetFull already contains a full MuMu install and none of your packages add anything new." Cyan
-                $ok = Read-Host 'Refresh the launcher/helper scripts and re-apply engine normalization in place? [Y/n]'
+                $ok = if ($Yes) { 'y' } else { Read-Host 'Refresh the launcher/helper scripts and re-apply engine normalization in place? [Y/n]' }
+                if ($ok -match '^(n|no)$') { Die 'Aborted.' }
+            } else {
+                Say "Existing install found in the target folder. New or updated component(s): $($missingOrUpgrade -join ', ')" Cyan
+                $ok = if ($Yes) { 'y' } else { Read-Host 'Install/upgrade them in the existing install? [Y/n]' }
                 if ($ok -match '^(n|no)$') { Die 'Aborted.' }
             }
-            else {
-                Say "Existing install found in the target folder. New component(s) in your kit: $($missing -join ', ')" Cyan
-                $ok = Read-Host 'Add them to the existing install? [Y/n]'
-                if ($ok -match '^(n|no)$') { Die 'Aborted.' }
+        } else {
+            if ($engines.Count -eq 0) {
+                Die "No engine package found in:
+  $kitDir
+Target folder is not a MuMu installation. Put an engine exe next to this script and retry (at least one engine is required)."
             }
-            $toInstallEngines = @($engines | Where-Object { $existingTypes -notcontains $_.type })
-            $addNxmain = ($nxmain -and -not $nxMainInstalled)
-        }
-        else {
             Say 'WARNING: the target folder is not empty.' Yellow
-            $ok = Read-Host 'Continue anyway? (existing files are kept untouched) [y/N]'
+            $ok = if ($Yes) { 'y' } else { Read-Host 'Continue anyway? (existing files are kept untouched) [y/N]' }
             if ($ok -notmatch '^(y|yes)$') { Die 'Aborted.' }
+            $toInstallEngines = $engines
+            $addNxmain = [bool]$nxmain
         }
+    } else {
+        if ($engines.Count -eq 0) {
+            Die "No engine package found in:
+  $kitDir
+Put the mumu15 (Android 15) and/or nemux (Android 12) engine exe next to this script and retry (at least one engine is required)."
+        }
+        $toInstallEngines = $engines
+        $addNxmain = [bool]$nxmain
     }
+} else {
+    if ($engines.Count -eq 0) {
+        Die "No engine package found in:
+  $kitDir
+Put the mumu15 (Android 15) and/or nemux (Android 12) engine exe next to this script and retry (at least one engine is required)."
+    }
+    New-Item -ItemType Directory -Path $targetFull -Force | Out-Null
+    $toInstallEngines = $engines
+    $addNxmain = [bool]$nxmain
 }
-else { New-Item -ItemType Directory -Path $targetFull -Force | Out-Null }
 
 $driveName = (Split-Path -Qualifier $targetFull).TrimEnd(':')
 $free = (Get-PSDrive $driveName).Free
-$needGB = 4 + 3 * ($toInstallEngines.Count - 1)
-if ($free -lt ($needGB * 1GB)) { Die ("Not enough free space on ${driveName}: (need about $needGB GB, found {0:N1} GB)." -f ($free / 1GB)) }
+$needGB = if ($toInstallEngines.Count -gt 0) { 4 + 3 * ($toInstallEngines.Count - 1) } elseif ($addNxmain) { 1 } else { 0 }
+if ($needGB -gt 0 -and $free -lt ($needGB * 1GB)) { Die ("Not enough free space on ${driveName}: (need about $needGB GB, found {0:N1} GB)." -f ($free / 1GB)) }
 if (Get-Process -Name MuMuNxDevice, MuMuNxSVC, MuMuNxHeadless -ErrorAction SilentlyContinue) { Die 'MuMu is currently running - close it first.' }
 if ($toInstallEngines.Count -gt 0) {
     $rtDirs = @('C:\Program Files\MuMuNxVbox\Hypervisor', 'C:\Program Files\MuMuVMMVbox\Hypervisor')
-    foreach ($e in $engines) { $rtDirs += (Join-Path $targetFull ('Netease\MuMuPlayer15\nx_device\' + $engineMap[$e.type].dir + '\hypervisor')) }
+    foreach ($t in $engineMap.Keys) {
+        $hv = Join-Path $targetFull ('Netease\MuMuPlayer15\nx_device\' + $engineMap[$t].dir + '\hypervisor')
+        if (Test-Path -LiteralPath $hv) { $rtDirs += $hv }
+    }
     $drvQ = (& sc.exe query MuMuVMMDrv 2>&1 | Out-String) + (& sc.exe query MuMuNxSup 2>&1 | Out-String)
     if ($drvQ -match 'SERVICE_NAME') {
         Say 'Existing MuMu driver found - unloading it before the engine upgrade...' Yellow
@@ -332,8 +433,8 @@ if ($installStaging) {
 # COM classes and drivers; re-register and re-install each installed engine's own family
 # (validated: without this, older-engine devices fail with VERR_VIRTUALBOX_ACCESSDENIED /
 #  VERR_LAUNCH_DRIVER_ERROR after a newer engine was added).
-foreach ($e in $engines) {
-    $m = $engineMap[$e.type]
+foreach ($t in $engineMap.Keys) {
+    $m = $engineMap[$t]
     $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
     if (-not (Test-Path -LiteralPath $hv)) { continue }
     if (Test-Path -LiteralPath (Join-Path $hv 'comregister.cmd')) {
@@ -517,8 +618,8 @@ Remove-Item -LiteralPath (Join-Path $targetFull 'Launch Engine.cmd') -Force -Err
 Remove-Item -LiteralPath (Join-Path $targetFull 'Launch MuMu.cmd') -Force -ErrorAction SilentlyContinue
 $mumuVmmDir = Join-Path $env:USERPROFILE '.MUMUVMM'
 if (-not (Test-Path -LiteralPath $mumuVmmDir)) { New-Item -ItemType Directory -Path $mumuVmmDir | Out-Null }
-foreach ($e in $engines) {
-    $m = $engineMap[$e.type]
+foreach ($t in $engineMap.Keys) {
+    $m = $engineMap[$t]
     if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $m.dir + "\shell\MuMuNxDevice.exe"))) {
         $content = $launchEngineTpl.Replace('@@A@@', $m.dir)
         [IO.File]::WriteAllText((Join-Path $targetFull ("Launch " + $m.label + ".cmd")), $content, [Text.Encoding]::ASCII)
@@ -829,11 +930,11 @@ elseif ($q -match 'SERVICE_NAME') {
     & sc.exe query $svc
 }
 else {
-    $a = Read-Host 'Enable the emulator driver on THIS PC now? (one-time, needed to run the emulator here) [Y/n]'
+    $a = if ($Yes) { 'y' } else { Read-Host 'Enable the emulator driver on THIS PC now? (one-time, needed to run the emulator here) [Y/n]' }
     if ($a -match '^(n|no)$') { Say 'Skipped. To enable later: run Enable-Driver.cmd (as Administrator) in the target folder.' Yellow }
     else {
-        foreach ($e in $engines) {
-            $m = $engineMap[$e.type]
+        foreach ($t in $engineMap.Keys) {
+            $m = $engineMap[$t]
             $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
             if (-not (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) { continue }
             $dst = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
@@ -848,8 +949,8 @@ else {
             }
         }
         Say 'Loading driver(s)...'
-        foreach ($e in $engines) {
-            $m = $engineMap[$e.type]
+        foreach ($t in $engineMap.Keys) {
+            $m = $engineMap[$t]
             $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
             if (-not (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) { continue }
             Push-Location -LiteralPath $hv
@@ -930,12 +1031,15 @@ Say ''
 Say '=================================================' Green
 Say " Portable MuMu installed in: $targetFull" Green
 $sumScripts = @()
-foreach ($e in $engines) {
-    if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $engineMap[$e.type].dir + "\shell\MuMuNxDevice.exe"))) { $sumScripts += '"Launch ' + $engineMap[$e.type].label + '.cmd"' }
+foreach ($t in $engineMap.Keys) {
+    $m = $engineMap[$t]
+    if (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $m.dir + "\shell\MuMuNxDevice.exe"))) {
+        $sumScripts += '"Launch ' + $m.label + '.cmd"'
+    }
 }
 if ($sumScripts) { Say (' Start with: ' + ($sumScripts -join ' / ') + '  (in that folder)') Green }
 if (Test-Path -LiteralPath (Join-Path $inst 'nx_main\MuMuNxMain.exe')) { Say ' Or "Launch Launcher.cmd" for the device list UI.' Green }
 Say '=================================================' Green
 Say ' The whole folder can be moved or copied anywhere - it stays portable.'
-Read-Host 'Press Enter to finish'
+if (-not $Yes) { Read-Host 'Press Enter to finish' }
 exit 0
