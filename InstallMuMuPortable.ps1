@@ -10,6 +10,7 @@ function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 $script:stagingRoot = $null
 $script:activeRoot = $null
 $script:targetPreExisted = $false
+$script:installStarted = $false
 $script:origEnv = @{
     APPDATA        = $env:APPDATA
     LOCALAPPDATA   = $env:LOCALAPPDATA
@@ -63,22 +64,42 @@ function Move-DirectoryWithMerge([string]$source, [string]$destination) {
     Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
 }
 
-function Remove-HostInstallRecords {
+function Remove-HostInstallRecords([switch]$Log) {
     $realAppData = [Environment]::GetFolderPath('ApplicationData')
     $icfgDir = Join-Path $realAppData 'Netease\MuMuPlayerGlobal'
     foreach ($f2 in @('install_config.json', 'new_install.json')) {
         $p = Join-Path $icfgDir $f2
         if (Test-Path -LiteralPath $p) {
-            try { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } catch { }
+            try {
+                Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+                if ($Log -and (-not (Test-Path -LiteralPath $p))) {
+                    Say "Removed engine install record: $p"
+                }
+            } catch { }
         }
     }
     $hcfg = Join-Path $realAppData 'Netease\MuMuNx\hypervisor_config.json'
     if (Test-Path -LiteralPath $hcfg) {
-        try { Remove-Item -LiteralPath $hcfg -Force -ErrorAction SilentlyContinue } catch { }
+        try {
+            Remove-Item -LiteralPath $hcfg -Force -ErrorAction SilentlyContinue
+            if ($Log -and (-not (Test-Path -LiteralPath $hcfg))) {
+                Say "Removed engine install record: $hcfg"
+            }
+        } catch { }
     }
     $pgmIcfg = "$env:ProgramData\Netease\MuMuPlayerGlobal\install_config.json"
     if (Test-Path -LiteralPath $pgmIcfg) {
-        try { Remove-Item -LiteralPath $pgmIcfg -Force -ErrorAction SilentlyContinue } catch { }
+        try {
+            Remove-Item -LiteralPath $pgmIcfg -Force -ErrorAction SilentlyContinue
+            if ($Log -and (-not (Test-Path -LiteralPath $pgmIcfg))) {
+                Say "Removed engine install record: $pgmIcfg"
+            }
+        } catch { }
+    }
+    foreach ($d in @((Join-Path $icfgDir 'data'), $icfgDir, (Join-Path $realAppData 'Netease\MuMuNx'), (Join-Path $realAppData 'Netease'))) {
+        if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            try { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } catch { }
+        }
     }
 }
 
@@ -188,8 +209,6 @@ Say '=== MuMu Player 12 Global - portable offline installer ===' Cyan
 Say ''
 
 try {
-
-Remove-HostInstallRecords
 
 # --- 1. locate the engine package(s) next to this script ---
 $kitDir = $PSScriptRoot
@@ -508,6 +527,8 @@ function Update-StagedPaths([string]$Root, [string]$Old, [string]$New) {
 # the install. Install into a space-free sibling, then move the tree back.
 $installRoot = $targetFull
 $installStaging = $null
+$script:installStarted = $true
+Remove-HostInstallRecords
 if (($targetFull -match '\s') -and (($toInstallEngines.Count -gt 0) -or $addNxmain)) {
     $installStaging = Get-SpaceFreeStagingPath $targetFull
     try {
@@ -601,7 +622,6 @@ function Install-Component([string]$exePath, [string]$tag, [string]$ver) {
     }
     if ($rc -ne 0) { Handle-ComponentFailure $tag 'commit' $rc }
     Say "    [$tag commit] OK" Green
-    Remove-HostInstallRecords
 }
 
 foreach ($e in $toInstallEngines) {
@@ -1233,33 +1253,7 @@ else {
 }
 
 # --- 7. remove engine/nxmain-written host traces (known-folder APIs ignore the env redirects above) ---
-$realAppData = [Environment]::GetFolderPath('ApplicationData')
-$icfgDir = Join-Path $realAppData 'Netease\MuMuPlayerGlobal'
-foreach ($f2 in @('install_config.json', 'new_install.json')) {
-    $p = Join-Path $icfgDir $f2
-    if (Test-Path -LiteralPath $p) {
-        try {
-            Remove-Item -LiteralPath $p -Force -ErrorAction Stop
-            if (-not (Test-Path -LiteralPath $p)) {
-                Say "Removed engine install record: $p"
-            }
-        } catch { }
-    }
-}
-$hcfg = Join-Path $realAppData 'Netease\MuMuNx\hypervisor_config.json'
-if (Test-Path -LiteralPath $hcfg) {
-    try {
-        Remove-Item -LiteralPath $hcfg -Force -ErrorAction Stop
-        if (-not (Test-Path -LiteralPath $hcfg)) {
-            Say "Removed engine install record: $hcfg"
-        }
-    } catch { }
-}
-foreach ($d in @((Join-Path $icfgDir 'data'), $icfgDir, (Join-Path $realAppData 'Netease\MuMuNx'), (Join-Path $realAppData 'Netease'))) {
-    if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-        try { Remove-Item -LiteralPath $d -Force -ErrorAction Stop } catch { }
-    }
-}
+Remove-HostInstallRecords -Log
 
 # --- 7b. NX launcher (nxmain) host traces: shortcuts, autostart, uninstall entry, remote service ---
 $deskLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'MuMuPlayer.lnk'
@@ -1340,6 +1334,8 @@ Restore-Environment
 if (-not $Yes) { Read-Host 'Press Enter to finish' }
 exit 0
 } finally {
-    Remove-HostInstallRecords
+    if ($script:installStarted) {
+        Remove-HostInstallRecords
+    }
     Restore-Environment
 }
