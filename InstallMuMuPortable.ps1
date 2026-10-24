@@ -1147,42 +1147,64 @@ else {
         $pfDir = Join-Path $pfRoot 'Hypervisor'
         $pfLd = Join-Path $pfRoot 'LoadedDrivers'
         $ld = Join-Path $inst ("nx_device\" + $m.dir + "\LoadedDrivers")
-        if (-not (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe))) {
+        $isEngineUpdated = [bool]($toInstallEngines | Where-Object { $_.type -eq $t })
+        $needsRuntimeCopy = $isEngineUpdated -or (-not (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe)))
+        if ($needsRuntimeCopy) {
             Say "Restoring $($m.label) hypervisor runtime to C:\Program Files\$($m.installName)..."
             try {
                 New-Item -ItemType Directory -Path $pfDir -Force | Out-Null
-                Get-ChildItem -LiteralPath $hv | Copy-Item -Destination $pfDir -Recurse -Force
+                foreach ($item in @(Get-ChildItem -LiteralPath $hv -Force)) {
+                    Copy-Item -LiteralPath $item.FullName -Destination $pfDir -Recurse -Force
+                }
             } catch { Say "[WARN] Could not restore the runtime: $($_.Exception.Message)" Yellow }
         }
-        if ((Test-Path -LiteralPath $ld) -and (-not (Test-Path -LiteralPath (Join-Path $pfLd ($m.svc + '.sys'))))) {
+        $needsDriverCopy = (Test-Path -LiteralPath $ld) -and ($isEngineUpdated -or (-not (Test-Path -LiteralPath (Join-Path $pfLd ($m.svc + '.sys')))))
+        if ($needsDriverCopy) {
             Say "Restoring $($m.label) drivers to C:\Program Files\$($m.installName)..."
             try {
                 New-Item -ItemType Directory -Path $pfLd -Force | Out-Null
-                Get-ChildItem -LiteralPath $ld | Copy-Item -Destination $pfLd -Recurse -Force
+                foreach ($item in @(Get-ChildItem -LiteralPath $ld -Force)) {
+                    Copy-Item -LiteralPath $item.FullName -Destination $pfLd -Recurse -Force
+                }
             } catch { Say "[WARN] Could not restore the drivers: $($_.Exception.Message)" Yellow }
         }
         $regTarget = if (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe)) { $pfDir } else { $hv }
         $svcExe = $null
-        try { $svcExe = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Classes\CLSID\$($m.clsid)\LocalServer32" -ErrorAction Stop).'(default)' } catch { }
+        try { $svcExe = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Classes\CLSID\$($m.clsid)\LocalServer32" -ErrorAction Stop).'(default)'
+        } catch { }
         $svcExePath = if ($svcExe) { $svcExe.Trim().Trim('"') } else { '' }
         $registered = [bool]$svcExePath -and (Test-Path -LiteralPath $svcExePath)
         if ($registered -and ($regTarget -ne $hv) -and (-not $svcExePath.StartsWith($regTarget, [StringComparison]::OrdinalIgnoreCase))) { $registered = $false }
-        if (-not $registered) {
+        if ($isEngineUpdated -or (-not $registered)) {
             Say "Registering $($m.label) COM classes ($regTarget)..."
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $regTarget + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
         }
         $loadTarget = if (Test-Path -LiteralPath (Join-Path $pfDir 'load.cmd')) { $pfDir } else { $hv }
         $svcStatus = & sc.exe query $m.svc 2>&1 | Out-String
-        if (($svcStatus -notmatch 'SERVICE_NAME') -and (Test-Path -LiteralPath (Join-Path $loadTarget 'load.cmd'))) {
+        $svcInstalled = ($svcStatus -match 'SERVICE_NAME')
+        $svcRunning = ($svcStatus -match 'STATE\s*:\s*4\s+RUNNING')
+        $binPathValid = $true
+        if ($svcInstalled) {
+            $qc = & sc.exe qc $m.svc 2>&1 | Out-String
+            if ($qc -match 'BINARY_PATH_NAME\s*:\s*(.+)') {
+                $rawBin = $Matches[1].Trim().Trim('"')
+                if ($rawBin.StartsWith('\??\')) { $rawBin = $rawBin.Substring(4) }
+                if (-not (Test-Path -LiteralPath $rawBin)) {
+                    $binPathValid = $false
+                }
+            }
+        }
+        if (($isEngineUpdated -or (-not $svcInstalled) -or (-not $binPathValid)) -and (Test-Path -LiteralPath (Join-Path $loadTarget 'load.cmd'))) {
             Say "Installing $($m.label) driver family..."
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $loadTarget + '" && load.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) driver install exited with $($p.ExitCode)" Yellow }
-        } elseif ($svcStatus -match 'SERVICE_NAME' -and $svcStatus -notmatch 'RUNNING') {
+        } elseif ($svcInstalled -and -not $svcRunning) {
             Say "Starting $($m.label) driver service ($($m.svc))..."
             & sc.exe start $m.svc 2>&1 | Out-Null
         }
-        if ((-not ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $loadTarget 'loadlwf.cmd'))) {
+        $netInstalled = ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')
+        if (($isEngineUpdated -or (-not $netInstalled)) -and (Test-Path -LiteralPath (Join-Path $loadTarget 'loadlwf.cmd'))) {
             Say "Installing $($m.label) network filter..."
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $loadTarget + '" && loadlwf.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) network filter exited with $($p.ExitCode)" Yellow }
