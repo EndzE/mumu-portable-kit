@@ -145,14 +145,8 @@ function Restore-StagedTarget {
     if (-not (Test-Path -LiteralPath $staged)) { return }
     Stop-RunningMuMuHostProcesses
     Remove-HostInstallRecords
-    if (-not $script:targetPreExisted) {
-        $stagedItems = @(Get-ChildItem -LiteralPath $staged -Force -ErrorAction SilentlyContinue)
-        if ($stagedItems.Count -eq 0) {
-            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-        } else {
-            Say "[WARN] Incomplete staged install left at $staged (target did not exist prior to install)." Yellow
-            $script:activeRoot = $staged
-        }
+    if (-not $script:targetPreExisted -and -not (Test-Path -LiteralPath (Join-Path $staged 'Netease\MuMuPlayer15'))) {
+        Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
         return
     }
     try {
