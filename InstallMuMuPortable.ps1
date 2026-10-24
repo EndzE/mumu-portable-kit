@@ -8,6 +8,27 @@ $ErrorActionPreference = 'Stop'
 
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 $script:stagingRoot = $null
+$script:activeRoot = $null
+$script:origEnv = @{
+    APPDATA        = $env:APPDATA
+    LOCALAPPDATA   = $env:LOCALAPPDATA
+    TEMP           = $env:TEMP
+    TMP            = $env:TMP
+    VBOX_USER_HOME = $env:VBOX_USER_HOME
+}
+
+function Restore-Environment {
+    if (-not $script:origEnv) { return }
+    foreach ($k in @('APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'VBOX_USER_HOME')) {
+        $val = $script:origEnv[$k]
+        if ([string]::IsNullOrEmpty($val)) {
+            Remove-Item -Path "Env:\$k" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:\$k" -Value $val
+        }
+    }
+}
+
 function Restore-StagedTarget {
     if (-not $script:stagingRoot) { return }
     $staged = $script:stagingRoot
@@ -16,11 +37,15 @@ function Restore-StagedTarget {
     if (-not (Test-Path -LiteralPath $staged)) { return }
     if (Test-Path -LiteralPath $final) {
         Say "[WARN] Staged install left at $staged (target already exists)." Yellow
+        $script:activeRoot = $staged
         return
     }
     try {
         Move-Item -LiteralPath $staged -Destination $final -ErrorAction Stop
         Say "Moved staged install back to $final." Yellow
+        $script:activeRoot = $final
+        $script:inst = Join-Path $final 'Netease\MuMuPlayer15'
+        $script:data = Join-Path $final 'Data'
         if (Get-Command Update-StagedPaths -ErrorAction SilentlyContinue) {
             $instFinal = Join-Path $final 'Netease\MuMuPlayer15'
             $dataFinal = Join-Path $final 'Data'
@@ -31,10 +56,21 @@ function Restore-StagedTarget {
     } catch {
         Say "[WARN] Could not move staged install back to ${final}: $($_.Exception.Message)" Yellow
         Say "       The staged tree is at $staged" Yellow
+        $script:activeRoot = $staged
     }
 }
-function Die($m) { Say "`n[ERROR] $m" Red; Restore-StagedTarget; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
-trap { Say "`n[ERROR] $_" Red; Restore-StagedTarget; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
+
+function Get-LogDirectory([string]$tag) {
+    $sub = if ($tag -eq 'nxmain') { 'main' } else { $tag }
+    $root = if ($script:activeRoot) { $script:activeRoot } elseif ($targetFull) { $targetFull } else { $null }
+    if ($root -and (Test-Path -LiteralPath (Join-Path $root 'Data\Temp'))) {
+        return (Join-Path $root "Data\Temp\MuMuPlayerGlobal\$sub")
+    }
+    return (Join-Path $env:TEMP "MuMuPlayerGlobal\$sub")
+}
+
+function Die($m) { Say "`n[ERROR] $m" Red; Restore-StagedTarget; Restore-Environment; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
+trap { Say "`n[ERROR] $_" Red; Restore-StagedTarget; Restore-Environment; if (-not $Yes) { Read-Host 'Press Enter to exit' }; exit 1 }
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Die 'Run this via "InstallMuMuPortable.cmd" (double-click) so it can request Administrator rights.'
@@ -43,6 +79,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 Say ''
 Say '=== MuMu Player 12 Global - portable offline installer ===' Cyan
 Say ''
+
+try {
 
 # --- 1. locate the engine package(s) next to this script ---
 $kitDir = $PSScriptRoot
@@ -99,6 +137,7 @@ if ([string]::IsNullOrWhiteSpace($Target)) { $Target = $default }
 $target = $Target.Trim().TrimEnd('\')
 if ($target -match '^[A-Za-z]:$') { Die 'Please specify a folder, not a drive root.' }
 try { $targetFull = [IO.Path]::GetFullPath($target) } catch { Die "Invalid path: $target" }
+$script:activeRoot = $targetFull
 if ($targetFull -match '[&|<>^"]') { Die 'Target path contains unsupported characters (& | < > ^ "). Pick a simpler folder name.' }
 foreach ($bad in @($env:windir, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
     if ($targetFull -like "$bad*") { Die "Refusing to install into $bad - pick your own folder." }
@@ -316,6 +355,7 @@ $installStaging = $null
 if (($targetFull -match '\s') -and (($toInstallEngines.Count -gt 0) -or $addNxmain)) {
     $installStaging = Get-SpaceFreeStagingPath $targetFull
     $script:stagingRoot = $installStaging
+    $script:activeRoot = $installStaging
     try {
         if (Test-Path -LiteralPath $targetFull) {
             Move-Item -LiteralPath $targetFull -Destination $installStaging -ErrorAction Stop
@@ -365,12 +405,14 @@ function Invoke-ComponentOnce([string]$exePath, [string]$action, [string]$tag, [
 
 function Handle-ComponentFailure([string]$tag, [string]$action, [int]$rc) {
     Say "[FAIL] $tag /action=$action exited with code $rc" Red
-    if ($tag -eq 'nxmain') { Say "nxmain logs: $env:TEMP\MuMuPlayerGlobal\main\" Yellow }
-    else { Say "Engine logs: $env:TEMP\MuMuPlayerGlobal\$tag\" Yellow }
     if ($rc -eq 30012) {
         Say 'The hypervisor driver was locked by the kernel (it was loaded before this run).' Yellow
         Say 'REBOOT Windows, then run this installer again - the upgrade will complete then.' Yellow
     }
+    Restore-StagedTarget
+    $logPath = Get-LogDirectory $tag
+    if ($tag -eq 'nxmain') { Say "nxmain logs: $logPath\" Yellow }
+    else { Say "Engine logs: $logPath\" Yellow }
     Die "Installation failed during $tag '$action'."
 }
 
@@ -420,7 +462,11 @@ foreach ($e in $toInstallEngines) {
     Say "--- Engine: $($e.name)  ($($engineMap[$e.type].label)) ---" Cyan
     Install-Component $e.path $e.type $e.version
     if (-not (Test-Path -LiteralPath (Join-Path $inst ("nx_device\" + $engineMap[$e.type].dir + "\shell\MuMuNxDevice.exe")))) {
-        Die "The $($e.type) engine finished but the install tree looks incomplete ($inst). Check the engine logs."
+        Restore-StagedTarget
+        $logPath = Get-LogDirectory $e.type
+        Say "Engine logs: $logPath\" Yellow
+        $finalInst = Join-Path (if ($script:activeRoot) { $script:activeRoot } else { $targetFull }) 'Netease\MuMuPlayer15'
+        Die "The $($e.type) engine finished but the install tree looks incomplete ($finalInst). Check the engine logs."
     }
     Say "$($e.type) engine install complete." Green
 }
@@ -437,7 +483,11 @@ if ($addNxmain) {
     $nxVer = if ($pv = (Get-ProductVersion)) { $pv } elseif ($nxVersion) { $nxVersion } else { '1.0.0.0' }
     Install-Component $nxmain 'nxmain' $nxVer
     if (-not (Test-Path -LiteralPath "$inst\nx_main\MuMuNxMain.exe")) {
-        Die "nxmain finished but '$inst\nx_main\MuMuNxMain.exe' is missing. Check the logs above."
+        Restore-StagedTarget
+        $logPath = Get-LogDirectory 'nxmain'
+        Say "nxmain logs: $logPath\" Yellow
+        $finalInst = Join-Path (if ($script:activeRoot) { $script:activeRoot } else { $targetFull }) 'Netease\MuMuPlayer15'
+        Die "nxmain finished but '$finalInst\nx_main\MuMuNxMain.exe' is missing. Check the logs above."
     }
     Say 'nxmain installed (launcher UI included).' Green
 }
@@ -449,6 +499,7 @@ if ($installStaging) {
     }
     Move-Item -LiteralPath $installStaging -Destination $targetFull -ErrorAction Stop
     $script:stagingRoot = $null
+    $script:activeRoot = $targetFull
     $installRoot = $targetFull
     $inst = Join-Path $targetFull 'Netease\MuMuPlayer15'
     $data = Join-Path $targetFull 'Data'
@@ -1098,5 +1149,9 @@ if ($sumScripts) { Say (' Start with: ' + ($sumScripts -join ' / ') + '  (in tha
 if (Test-Path -LiteralPath (Join-Path $inst 'nx_main\MuMuNxMain.exe')) { Say ' Or "Launch Launcher.cmd" for the device list UI.' Green }
 Say '=================================================' Green
 Say ' The whole folder can be moved or copied anywhere - it stays portable.'
+Restore-Environment
 if (-not $Yes) { Read-Host 'Press Enter to finish' }
 exit 0
+} finally {
+    Restore-Environment
+}
