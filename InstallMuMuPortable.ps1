@@ -591,21 +591,31 @@ if (Test-Path -LiteralPath (Join-Path $inst 'nx_main\MuMuNxMain.exe')) {
 $enableEngineBlocks = foreach ($t in $engineMap.Keys) {
     $m = $engineMap[$t]
     $pf = 'C:\Program Files\' + $m.installName + '\Hypervisor'
+    $pfLd = 'C:\Program Files\' + $m.installName + '\LoadedDrivers'
     @"
 if exist "%INST%\nx_device\$($m.dir)\hypervisor\load.cmd" (
   echo --- $($m.label) ---
   if not exist "$pf" md "$pf"
   xcopy "%INST%\nx_device\$($m.dir)\hypervisor" "$pf" /E /I /Y /Q
   if errorlevel 1 echo [WARN] $($m.label) runtime copy failed.
-  if exist "$pf\comregister.cmd" (
+  if exist "%INST%\nx_device\$($m.dir)\LoadedDrivers" (
+    if not exist "$pfLd" md "$pfLd"
+    xcopy "%INST%\nx_device\$($m.dir)\LoadedDrivers" "$pfLd" /E /I /Y /Q
+    if errorlevel 1 echo [WARN] $($m.label) driver copy failed.
+  )
+  if exist "$pf\load.cmd" (
     pushd "$pf"
-    call comregister.cmd
+    if exist comregister.cmd call comregister.cmd
+    call load.cmd
+    if exist loadlwf.cmd call loadlwf.cmd
+    popd
+  ) else (
+    pushd "%INST%\nx_device\$($m.dir)\hypervisor"
+    if exist comregister.cmd call comregister.cmd
+    call load.cmd
+    if exist loadlwf.cmd call loadlwf.cmd
     popd
   )
-  pushd "%INST%\nx_device\$($m.dir)\hypervisor"
-  call load.cmd
-  if exist loadlwf.cmd call loadlwf.cmd
-  popd
 )
 "@
 }
@@ -886,9 +896,11 @@ if ($a -match '^(n|no)$') {
     Say 'Skipped. Unloading any driver installed during setup (run Enable-Driver.cmd later to use on any PC)...' Yellow
     foreach ($t in $engineMap.Keys) {
         $m = $engineMap[$t]
+        $pfHv = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
         $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
-        if (Test-Path -LiteralPath (Join-Path $hv 'load.cmd')) {
-            Push-Location -LiteralPath $hv
+        $unTarget = if (Test-Path -LiteralPath (Join-Path $pfHv 'load.cmd')) { $pfHv } elseif (Test-Path -LiteralPath (Join-Path $hv 'load.cmd')) { $hv } else { $null }
+        if ($unTarget) {
+            Push-Location -LiteralPath $unTarget
             try { & cmd.exe /c 'load.cmd --uninstall' } finally { Pop-Location }
         }
     }
@@ -916,13 +928,23 @@ else {
         $m = $engineMap[$t]
         $hv = Join-Path $inst ("nx_device\" + $m.dir + "\hypervisor")
         if (-not (Test-Path -LiteralPath $hv)) { continue }
-        $pfDir = Join-Path 'C:\Program Files' ($m.installName + '\Hypervisor')
+        $pfRoot = Join-Path 'C:\Program Files' $m.installName
+        $pfDir = Join-Path $pfRoot 'Hypervisor'
+        $pfLd = Join-Path $pfRoot 'LoadedDrivers'
+        $ld = Join-Path $inst ("nx_device\" + $m.dir + "\LoadedDrivers")
         if (-not (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe))) {
             Say "Restoring $($m.label) hypervisor runtime to C:\Program Files\$($m.installName)..."
             try {
                 New-Item -ItemType Directory -Path $pfDir -Force | Out-Null
                 Get-ChildItem -LiteralPath $hv | Copy-Item -Destination $pfDir -Recurse -Force
             } catch { Say "[WARN] Could not restore the runtime: $($_.Exception.Message)" Yellow }
+        }
+        if ((Test-Path -LiteralPath $ld) -and (-not (Test-Path -LiteralPath (Join-Path $pfLd ($m.svc + '.sys'))))) {
+            Say "Restoring $($m.label) drivers to C:\Program Files\$($m.installName)..."
+            try {
+                New-Item -ItemType Directory -Path $pfLd -Force | Out-Null
+                Get-ChildItem -LiteralPath $ld | Copy-Item -Destination $pfLd -Recurse -Force
+            } catch { Say "[WARN] Could not restore the drivers: $($_.Exception.Message)" Yellow }
         }
         $regTarget = if (Test-Path -LiteralPath (Join-Path $pfDir $m.svcExe)) { $pfDir } else { $hv }
         $svcExe = $null
@@ -935,18 +957,19 @@ else {
             $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $regTarget + '" && comregister.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) comregister exited with $($p.ExitCode)" Yellow }
         }
+        $loadTarget = if (Test-Path -LiteralPath (Join-Path $pfDir 'load.cmd')) { $pfDir } else { $hv }
         $svcStatus = & sc.exe query $m.svc 2>&1 | Out-String
-        if (($svcStatus -notmatch 'SERVICE_NAME') -and (Test-Path -LiteralPath (Join-Path $hv 'load.cmd'))) {
+        if (($svcStatus -notmatch 'SERVICE_NAME') -and (Test-Path -LiteralPath (Join-Path $loadTarget 'load.cmd'))) {
             Say "Installing $($m.label) driver family..."
-            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && load.cmd') -Wait -PassThru -WindowStyle Hidden
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $loadTarget + '" && load.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) driver install exited with $($p.ExitCode)" Yellow }
         } elseif ($svcStatus -match 'SERVICE_NAME' -and $svcStatus -notmatch 'RUNNING') {
             Say "Starting $($m.label) driver service ($($m.svc))..."
             & sc.exe start $m.svc 2>&1 | Out-Null
         }
-        if ((-not ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $hv 'loadlwf.cmd'))) {
+        if ((-not ((& sc.exe query $m.netSvc 2>&1 | Out-String) -match 'SERVICE_NAME')) -and (Test-Path -LiteralPath (Join-Path $loadTarget 'loadlwf.cmd'))) {
             Say "Installing $($m.label) network filter..."
-            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $hv + '" && loadlwf.cmd') -Wait -PassThru -WindowStyle Hidden
+            $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('cd /d "' + $loadTarget + '" && loadlwf.cmd') -Wait -PassThru -WindowStyle Hidden
             if ($p.ExitCode -ne 0) { Say "[WARN] $($m.label) network filter exited with $($p.ExitCode)" Yellow }
         }
     }
