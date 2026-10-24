@@ -59,6 +59,59 @@ function Move-DirectoryWithMerge([string]$source, [string]$destination) {
     Remove-Item -LiteralPath $source -Force -ErrorAction SilentlyContinue
 }
 
+function Remove-HostInstallRecords {
+    $realAppData = [Environment]::GetFolderPath('ApplicationData')
+    $icfgDir = Join-Path $realAppData 'Netease\MuMuPlayerGlobal'
+    foreach ($f2 in @('install_config.json', 'new_install.json')) {
+        $p = Join-Path $icfgDir $f2
+        if (Test-Path -LiteralPath $p) {
+            try { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+    $hcfg = Join-Path $realAppData 'Netease\MuMuNx\hypervisor_config.json'
+    if (Test-Path -LiteralPath $hcfg) {
+        try { Remove-Item -LiteralPath $hcfg -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    $pgmIcfg = "$env:ProgramData\Netease\MuMuPlayerGlobal\install_config.json"
+    if (Test-Path -LiteralPath $pgmIcfg) {
+        try { Remove-Item -LiteralPath $pgmIcfg -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function Sanitize-InstallConfig([string]$cfgPath, [string]$currentInst) {
+    if (-not (Test-Path -LiteralPath $cfgPath)) { return }
+    try {
+        $json = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+        if (-not $json) { return }
+        if ($json.product -and $json.product.install_dir) {
+            $json.product.install_dir = $currentInst
+        }
+        if ($json.main -and $json.main.install_dir) {
+            $json.main.install_dir = Join-Path $currentInst 'nx_main'
+        }
+        if ($json.engines) {
+            $toRemove = @()
+            foreach ($prop in $json.engines.PSObject.Properties) {
+                $engType = $prop.Name
+                $engVal = $prop.Value
+                $dirName = if ($engType -eq 'nemux') { '12.0' } else { '15.0' }
+                $expectedDev = Join-Path $currentInst ("nx_device\" + $dirName)
+                if (-not (Test-Path -LiteralPath (Join-Path $expectedDev 'shell\MuMuNxDevice.exe'))) {
+                    $toRemove += $engType
+                } else {
+                    if ($engVal.player) { $engVal.player.install_dir = Join-Path $expectedDev 'shell' }
+                    if ($engVal.vms) { $engVal.vms.install_dir = Join-Path $currentInst 'vms' }
+                    if ($engVal.renderer) { $engVal.renderer.install_dir = Join-Path $expectedDev 'device' }
+                }
+            }
+            foreach ($r in $toRemove) {
+                $json.engines.PSObject.Properties.Remove($r)
+            }
+        }
+        $json | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $cfgPath -Encoding UTF8
+    } catch { }
+}
+
 function Restore-StagedTarget {
     if (-not $script:stagingRoot) { return }
     $staged = $script:stagingRoot
@@ -66,6 +119,7 @@ function Restore-StagedTarget {
     $script:stagingRoot = $null
     if (-not (Test-Path -LiteralPath $staged)) { return }
     Stop-RunningMuMuHostProcesses
+    Remove-HostInstallRecords
     if (-not $script:targetPreExisted) {
         $stagedItems = @(Get-ChildItem -LiteralPath $staged -Force -ErrorAction SilentlyContinue)
         if ($stagedItems.Count -eq 0) {
@@ -130,6 +184,8 @@ Say '=== MuMu Player 12 Global - portable offline installer ===' Cyan
 Say ''
 
 try {
+
+Remove-HostInstallRecords
 
 # --- 1. locate the engine package(s) next to this script ---
 $kitDir = $PSScriptRoot
@@ -500,6 +556,8 @@ function Handle-ComponentFailure([string]$tag, [string]$action, [int]$rc) {
 }
 
 function Install-Component([string]$exePath, [string]$tag, [string]$ver) {
+    Remove-HostInstallRecords
+    Sanitize-InstallConfig (Join-Path $inst 'configs\main\install_config.json') $inst
     $script:txn = [guid]::NewGuid().ToString()
     $rc = Invoke-ComponentOnce $exePath 'install_prepare' $tag $ver
     $pv = Get-ProductVersion
@@ -507,6 +565,8 @@ function Install-Component([string]$exePath, [string]$tag, [string]$ver) {
         Say "[retry] $tag was rejected (downgrade check, rc=80002) - retrying with product version $pv" Yellow
         $staleTxn = Join-Path $inst (".txn\" + $script:txn)
         if (Test-Path -LiteralPath $staleTxn) { Remove-Item -LiteralPath $staleTxn -Recurse -Force -ErrorAction SilentlyContinue }
+        Remove-HostInstallRecords
+        Sanitize-InstallConfig (Join-Path $inst 'configs\main\install_config.json') $inst
         $script:txn = [guid]::NewGuid().ToString()
         $ver = $pv
         $rc = Invoke-ComponentOnce $exePath 'install_prepare' $tag $ver
@@ -524,20 +584,7 @@ function Install-Component([string]$exePath, [string]$tag, [string]$ver) {
     }
     if ($rc -ne 0) { Handle-ComponentFailure $tag 'commit' $rc }
     Say "    [$tag commit] OK" Green
-}
-
-function Invoke-Component([string]$exePath, [string]$action, [string]$tag, [string]$ver) {
-    $rc = Invoke-ComponentOnce $exePath $action $tag $ver
-    $pv = Get-ProductVersion
-    if ($rc -eq 80002 -and $pv -and $pv -ne $ver) {
-        Say "[retry] $tag was rejected (downgrade check, rc=80002) - retrying with product version $pv" Yellow
-        $staleTxn = Join-Path $inst (".txn\" + $script:txn)
-        if (Test-Path -LiteralPath $staleTxn) { Remove-Item -LiteralPath $staleTxn -Recurse -Force -ErrorAction SilentlyContinue }
-        $script:txn = [guid]::NewGuid().ToString()
-        $rc = Invoke-ComponentOnce $exePath $action $tag $pv
-    }
-    if ($rc -ne 0) { Handle-ComponentFailure $tag $action $rc }
-    Say "    [$tag $action] OK" Green
+    Remove-HostInstallRecords
 }
 
 foreach ($e in $toInstallEngines) {
@@ -1254,5 +1301,6 @@ Restore-Environment
 if (-not $Yes) { Read-Host 'Press Enter to finish' }
 exit 0
 } finally {
+    Remove-HostInstallRecords
     Restore-Environment
 }
